@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>COBALT SECTOR</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="c3d"></canvas>
+
+    <!-- HUD en jeu -->
+    <div id="hud" class="hidden">
+      <div id="topcenter">
+        <div id="sectorname">Secteur —</div>
+        <div id="gps">X:0 Y:0</div>
+        <div id="territory"><span id="territory-dot"></span><span id="territory-label">Espace neutre</span></div>
+      </div>
+
+      <div id="topleft">
+        <div class="bar-row"><span class="bar-label">COQUE</span><div class="bar"><div id="bar-hull" class="bar-fill hull"></div></div><span id="txt-hull" class="bar-txt"></span></div>
+        <div class="bar-row"><span class="bar-label">BOUCLIER</span><div class="bar"><div id="bar-shield" class="bar-fill shield"></div></div><span id="txt-shield" class="bar-txt"></span></div>
+        <div class="bar-row"><span class="bar-label">ÉNERGIE</span><div class="bar"><div id="bar-energy" class="bar-fill energy"></div></div><span id="txt-energy" class="bar-txt"></span></div>
+        <div id="credits-row">⬡ <span id="txt-credits">0</span> crédits</div>
+        <div id="cargo-row">Soute : <span id="txt-cargo"></span></div>
+        <div id="ship-row">Vaisseau : <span id="txt-ship"></span></div>
+      </div>
+
+      <div id="topright">
+        <div id="clock">00:00</div>
+        <div id="star-info"></div>
+        <div id="team-scores"></div>
+        <div id="supernova-warn" class="hidden">☀ SUPERNOVA DANS <span id="supernova-t"></span></div>
+      </div>
+
+      <div id="bottomleft">
+        <canvas id="radar" width="220" height="220"></canvas>
+      </div>
+
+      <div id="bottomcenter"></div>
+
+      <div id="msglog"></div>
+      <div id="alert" class="hidden"></div>
+      <div id="hint-bar"></div>
+    </div>
+
+    <!-- Barre tactique (vue dézoomée) -->
+    <div id="tacticalbar" class="hidden">
+      <div class="tb-title">VUE TACTIQUE</div>
+      <div class="tb-section">
+        <button id="btn-fleet-create" class="tb-btn">➕ Créer flotte</button>
+        <button id="btn-fleet-disband" class="tb-btn">✖ Dissoudre</button>
+      </div>
+      <div class="tb-section" id="tb-formations">
+        <span class="tb-label">Formation :</span>
+        <button class="tb-btn frm" data-frm="ligne">Ligne</button>
+        <button class="tb-btn frm" data-frm="coin">Coin</button>
+        <button class="tb-btn frm" data-frm="cercle">Demi-cercle</button>
+        <button class="tb-btn frm" data-frm="colonne">Colonne</button>
+      </div>
+      <div class="tb-section" id="tb-fleets"></div>
+      <div class="tb-hint">Glisser : sélection · Clic droit : ordre contextuel · Molette : zoom</div>
+    </div>
+
+    <!-- Menu contextuel clic droit -->
+    <div id="ctxmenu" class="hidden"></div>
+    <!-- Rectangle de sélection -->
+    <div id="selectbox" class="hidden"></div>
+
+    <!-- Panneau construction -->
+    <div id="panel-build" class="side-panel hidden">
+      <h3>CONSTRUCTION <span class="kbd">B</span></h3>
+      <div id="build-list"></div>
+      <div class="panel-hint">Clic sur la carte pour placer · Échap pour annuler</div>
+    </div>
+
+    <!-- Panneau station (boutique) -->
+    <div id="panel-shop" class="side-panel hidden">
+      <h3>STATION SPATIALE <span class="kbd">U</span></h3>
+      <div id="shop-tabs">
+        <button class="shop-tab active" data-tab="vaisseaux">Vaisseaux</button>
+        <button class="shop-tab" data-tab="armes">Armes</button>
+        <button class="shop-tab" data-tab="ameliorations">Améliorations</button>
+        <button class="shop-tab" data-tab="station">Station</button>
+      </div>
+      <div id="shop-list"></div>
+    </div>
+
+    <!-- Vignette mode espion -->
+    <div id="spyvignette" class="hidden"></div>
+
+    <!-- Menu principal -->
+    <div id="menu" class="overlay">
+      <div id="menu-box">
+        <h1 id="game-title">COBALT<span> SECTOR</span></h1>
+        <p id="menu-tagline">Stratégie & action spatiale — parties de ~20 minutes</p>
+        <div id="menu-opts">
+          <div class="opt-row"><span class="opt-label">Votre couleur</span><div id="opt-color" class="opt-choices"></div></div>
+          <div class="opt-row"><span class="opt-label">Adversaires IA</span><div id="opt-ai" class="opt-choices"></div></div>
+          <div class="opt-row"><span class="opt-label">Comportement IA</span><div id="opt-persona" class="opt-choices"></div></div>
+          <div class="opt-row"><span class="opt-label">Système stellaire</span><div id="opt-star" class="opt-choices"></div></div>
+          <div class="opt-row"><span class="opt-label">Difficulté</span><div id="opt-diff" class="opt-choices"></div></div>
+        </div>
+        <button id="btn-start" class="big-btn">LANCER LA PARTIE</button>
+        <button id="btn-help" class="small-btn">Comment jouer ?</button>
+        <div id="menu-footer">v0.1 — Multijoueur LAN : à venir</div>
+      </div>
+      <div id="help-box" class="hidden">
+        <h2>COMMENT JOUER</h2>
+        <div id="help-content"></div>
+        <button id="btn-help-close" class="small-btn">Retour</button>
+      </div>
+    </div>
+
+    <!-- Pause -->
+    <div id="pause" class="overlay hidden">
+      <div class="overlay-box">
+        <h2>PAUSE</h2>
+        <button id="btn-resume" class="big-btn">Reprendre</button>
+        <button id="btn-pause-help" class="small-btn">Contrôles</button>
+        <button id="btn-quit" class="small-btn">Quitter au menu</button>
+      </div>
+    </div>
+
+    <!-- Fin de partie -->
+    <div id="gameover" class="overlay hidden">
+      <div class="overlay-box">
+        <h2 id="go-title">FIN DE PARTIE</h2>
+        <p id="go-reason"></p>
+        <div id="go-stats"></div>
+        <button id="btn-replay" class="big-btn">Rejouer</button>
+        <button id="btn-tomenu" class="small-btn">Menu principal</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
