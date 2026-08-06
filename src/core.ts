@@ -53,10 +53,10 @@ export type Res = 'roche' | 'minerai' | 'gaz';
 export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 
 // ---------- Identifiants de données (définis dans data.ts) ----------
-export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider';
-export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile';
+export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider' | 'colosse';
+export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile' | 'salve' | 'brise_monde';
 export type MineType = 'frag' | 'emp' | 'aimant';
-export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo' | 'depot';
+export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo' | 'depot' | 'usine';
 export type PlanetType = 'tellurique' | 'glace' | 'lave' | 'gazeuse' | 'oceanique' | 'desert';
 export type StarType = 'sol_jaune' | 'sol_rouge' | 'sol_bleu' | 'sol_violet' | 'naine_blanche' | 'binaire' | 'triple' | 'neutron' | 'trou_noir' | 'supergeante';
 export type PersonaId = 'agressif' | 'econome' | 'opportuniste' | 'defensif' | 'equilibre';
@@ -120,6 +120,7 @@ export interface Structure {
   lastDmgT: number;               // le bouclier ne régénère qu'après 10 s sans dégât
   pendingCredits: number;         // dépôt : valeur stockée (propriétaire), écoulée à débit limité
   pendingAllied: Record<number, number>;  // dépôt : valeur en attente par équipe alliée
+  buildT: number;                 // usine d'assemblage : chantier restant (s), 0 = inactif
   alive: boolean;
 }
 
@@ -173,7 +174,7 @@ export interface SmokeZone { id: number; pos: V2; radius: number; t: number }
 
 /** Événements visuels/sonores produits par la sim, consommés par le rendu. */
 export interface FxEvent {
-  type: 'tir' | 'impact' | 'explosion' | 'beam' | 'saut' | 'onde' | 'frappe' | 'bulle' | 'fumee' | 'colonise' | 'minage' | 'eclair' | 'stase_fx';
+  type: 'tir' | 'impact' | 'explosion' | 'beam' | 'saut' | 'onde' | 'frappe' | 'bulle' | 'fumee' | 'colonise' | 'minage' | 'eclair' | 'stase_fx' | 'rayon';
   pos: V2; pos2?: V2; color?: number; size?: number; wid?: WeaponId;
 }
 
@@ -196,6 +197,7 @@ export interface TeamState {
   secondaries: WeaponId[];           // armes secondaires achetées (joueur)
   aiCd: number;                      // réflexion macro IA
   respawnT: number;                  // délai de réapparition de l'amiral
+  colossusUsed: boolean;             // le Colosse ne peut être créé qu'une seule fois
   score: number;
   kills: number;
 }

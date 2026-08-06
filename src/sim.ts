@@ -14,6 +14,7 @@ import {
   UPGRADES, STATION_UPGRADE_PRICE, PIRATE_RAID_PERIOD,
   LABO_INCOME, LABO_INCOME_PERIOD, GUARD_COST, GUARD_COMP,
   DEPOT_RATE, DEPOT_CAP, DEPOT_ALLY_BONUS, ALLY_TRADE_MULT, ALLIANCE_DURATION, PLANET_UPGRADE_COST, PLANET_UPGRADE_HP, DIFF_TUNING,
+  COLOSSE_LABS_REQUIRED, COLOSSE_BUILD_TIME, COLOSSE_RAY_COUNT, COLOSSE_RAY_RANGE, COLOSSE_SALVO_SIZE,
 } from './data';
 import {
   makeRoid, makeCloud,
@@ -110,6 +111,7 @@ export function simTick(gs: GameState, dt: number) {
   updateStarBodies(gs, dt);
   updateStorms(gs, dt);
   updateMeteors(gs, dt);
+  updateColossus(gs, dt);
   updateFleetMissions(gs, dt);
   thinkTeams(gs, dt);
   thinkPirates(gs, dt);
@@ -1142,6 +1144,10 @@ export function destroyStructure(gs: GameState, st: Structure, attackerTeam: num
   } else if (owner) {
     addLog(gs, `${STRUCTS[st.stype].nom} ${owner.name} détruit(e).`, owner.cssColor);
     if (st.team === gs.playerTeam) setAlert(gs, 'STRUCTURE PERDUE', 2.5);
+    if (st.stype === 'usine' && st.buildT > 0) {
+      setAlert(gs, st.team === gs.playerTeam ? 'LE CHANTIER DU COLOSSE EST DÉTRUIT' : 'LE CHANTIER DU COLOSSE ENNEMI EST DÉTRUIT', 5,
+        st.team === gs.playerTeam ? '#ff4b4b' : '#6dff8a');
+    }
   }
 }
 
@@ -1188,6 +1194,39 @@ function updateStructures(gs: GameState, dt: number) {
         const dir = norm(sub(foe.pos, st.pos));
         makeProjectile(gs, st.team, 'canon', add(st.pos, scale(dir, st.radius + 2)), scale(dir, 280), def.weaponDmg + st.level * 2, def.weaponRange / 280 * 1.1, null);
         gs.fx.push({ type: 'tir', pos: { ...st.pos }, color: 0xffd27a, wid: 'canon' });
+      }
+    }
+
+    // chantier du Colosse
+    if (st.stype === 'usine' && st.buildT > 0) {
+      st.buildT -= dt;
+      if (gs.rng() < dt * 4) {
+        gs.fx.push({ type: 'impact', pos: add(st.pos, fromAngle(gs.rng() * Math.PI * 2, st.radius * gs.rng())), color: 0x7adfff, size: 6 });
+      }
+      const owner2 = gs.teams[st.team];
+      if (st.buildT <= 0 && owner2) {
+        // chantier terminé : le vaisseau du propriétaire explose… et renaît en COLOSSE
+        st.alive = false;
+        owner2.colossusUsed = true;
+        gs.fx.push({ type: 'explosion', pos: { ...st.pos }, size: 40, color: 0xff2222 });
+        gs.fx.push({ type: 'onde', pos: { ...st.pos }, size: 200, color: 0xff2222 });
+        const flag = gs.ships.find(x => x.alive && x.team === st.team && x.isFlagship);
+        if (flag) {
+          gs.fx.push({ type: 'explosion', pos: { ...flag.pos }, size: flag.radius * 2, color: 0xff8c42 });
+          flag.alive = false;
+          removeFromFleet(gs, flag);
+        }
+        owner2.respawnT = 0;
+        const colosse = makeShip(gs, st.team, 'colosse', { ...st.pos });
+        colosse.isFlagship = true;
+        applyUpgrades(gs, colosse);
+        if (st.team === gs.playerTeam) {
+          gs.playerShipId = colosse.id;
+          setAlert(gs, 'LE COLOSSE EST NÉ', 6, '#6dff8a');
+          addLog(gs, 'COLOSSE opérationnel : rayons automatiques, A = salve de 8 missiles, E = Brise-Monde.', '#ff4b4b');
+        } else {
+          setAlert(gs, `${owner2.name.toUpperCase()} A DÉCHAÎNÉ UN COLOSSE`, 6);
+        }
       }
     }
 
@@ -1585,6 +1624,14 @@ export function canPlaceStructure(gs: GameState, teamId: number, stype: StructTy
   if (!team) return 'Équipe invalide';
   const def = STRUCTS[stype];
   if (team.credits < def.prix) return 'Crédits insuffisants';
+  // l'usine d'assemblage : 5 laboratoires, une seule par équipe, un seul Colosse
+  if (stype === 'usine') {
+    const team2 = gs.teams[teamId];
+    if (team2?.colossusUsed) return 'Le Colosse a déjà été assemblé';
+    if (gs.structures.some(st => st.alive && st.team === teamId && st.stype === 'usine')) return 'Usine déjà en chantier';
+    const labs = gs.structures.filter(st => st.alive && st.team === teamId && st.stype === 'labo').length;
+    if (labs < COLOSSE_LABS_REQUIRED) return `Requiert ${COLOSSE_LABS_REQUIRED} laboratoires (${labs}/${COLOSSE_LABS_REQUIRED})`;
+  }
   // le laboratoire se bâtit DANS un nuage électrique, où qu'il soit
   if (stype === 'labo') {
     if (!gs.storms.some(sc => sc.alive && dist(sc.pos, pos) < sc.radius)) {
@@ -1608,9 +1655,17 @@ export function placeStructure(gs: GameState, teamId: number, stype: StructType,
   if (err) return err;
   const team = gs.teams[teamId]!;
   team.credits -= STRUCTS[stype].prix;
-  makeStructure(gs, teamId, stype, pos);
+  const st = makeStructure(gs, teamId, stype, pos);
   gs.fx.push({ type: 'saut', pos: { ...pos } });
   addLog(gs, `${STRUCTS[stype].nom} construit(e).`, team.cssColor);
+  if (stype === 'usine') {
+    // TOUT LE MONDE est prévenu : 4 minutes pour l'abattre
+    st.buildT = COLOSSE_BUILD_TIME;
+    addLog(gs, `${team.name} assemble un COLOSSE ! Chantier : 4 minutes.`, '#ff4b4b');
+    setAlert(gs, teamId === gs.playerTeam
+      ? 'CHANTIER DU COLOSSE LANCÉ — TENEZ 4 MINUTES'
+      : `${team.name.toUpperCase()} ASSEMBLE UN COLOSSE — DÉTRUISEZ L'USINE`, 6);
+  }
   return null;
 }
 
@@ -1976,6 +2031,122 @@ export function buyGuards(gs: GameState, teamId: number, targetId: number): stri
     gs.fx.push({ type: 'saut', pos: { ...pos } });
   });
   addLog(gs, `Garde orbitale déployée (${comp.length} vaisseaux).`, team.cssColor);
+  return null;
+}
+
+// ================================================================
+//  COLOSSE — rayons automatiques à dégâts croissants, salve, Brise-Monde
+// ================================================================
+const rayHeat = new Map<string, number>();     // `${colosse}:${cible}` -> chauffe
+const rayFxT = new Map<number, number>();      // throttle des effets par colosse
+const colossusLocks = new Map<number, number[]>();
+
+function updateColossus(gs: GameState, dt: number) {
+  for (const c of gs.ships) {
+    if (!c.alive || c.cls !== 'colosse') continue;
+    // cibles : jusqu'à 5 ennemis distincts à portée
+    const targets: (Ship | Structure)[] = [];
+    const candidates: (Ship | Structure)[] = [
+      ...gs.ships.filter(x => x.alive && isEnemy(c.team, x.team) && x.cloakT <= 0 && x.smokeT <= 0
+        && dist(x.pos, c.pos) < COLOSSE_RAY_RANGE),
+      ...gs.structures.filter(x => x.alive && isEnemy(c.team, x.team)
+        && dist(x.pos, c.pos) < COLOSSE_RAY_RANGE),
+    ].sort((x, y) => dist(x.pos, c.pos) - dist(y.pos, c.pos));
+    for (const t of candidates) {
+      if (targets.length >= COLOSSE_RAY_COUNT) break;
+      targets.push(t);
+    }
+    const fxDue = (rayFxT.get(c.id) ?? 0) - dt;
+    rayFxT.set(c.id, fxDue <= 0 ? 0.12 : fxDue);
+    for (const t of targets) {
+      if (c.energy < 6) break;
+      const key = `${c.id}:${t.id}`;
+      const heat = Math.min(4, (rayHeat.get(key) ?? 0) + dt);   // plus c'est long, plus ça brûle
+      rayHeat.set(key, heat);
+      const dmg = (7 + heat * 5) * dt;
+      applyDamage(gs, t, dmg, c.team);
+      c.energy = Math.max(0, c.energy - (2.2 + heat * 1.3) * dt);
+      if (fxDue <= 0) {
+        gs.fx.push({ type: 'rayon', pos: { ...c.pos }, pos2: { ...t.pos }, color: 0xff2222, size: 2 + heat });
+      }
+    }
+    // refroidissement des cibles hors faisceau
+    const hot = new Set(targets.map(t => `${c.id}:${t.id}`));
+    for (const [key, h] of rayHeat) {
+      if (key.startsWith(`${c.id}:`) && !hot.has(key)) {
+        const nh = h - dt * 2;
+        if (nh <= 0) rayHeat.delete(key); else rayHeat.set(key, nh);
+      }
+    }
+  }
+}
+
+/** Verrouillage multiple de la salve (A maintenu sur le Colosse). */
+export function colossusLockTick(gs: GameState, c: Ship, dt: number): { targets: number[]; progress: number; ready: boolean } {
+  const w = WEAPONS.salve;
+  if (c.weapons[0].cd > 0 || c.energy < w.energy) {
+    c.lockT = 0;
+    colossusLocks.delete(c.id);
+    return { targets: [], progress: 0, ready: false };
+  }
+  const targets = gs.ships
+    .filter(x => x.alive && isEnemy(c.team, x.team) && x.cloakT <= 0 && dist(x.pos, c.pos) < w.range)
+    .sort((x, y) => dist(x.pos, c.pos) - dist(y.pos, c.pos))
+    .slice(0, COLOSSE_SALVO_SIZE)
+    .map(x => x.id);
+  if (targets.length === 0) {
+    c.lockT = 0;
+    colossusLocks.delete(c.id);
+    return { targets: [], progress: 0, ready: false };
+  }
+  colossusLocks.set(c.id, targets);
+  c.lockT = Math.min(w.lockTime ?? 1.5, c.lockT + dt);
+  const ready = c.lockT >= (w.lockTime ?? 1.5);
+  return { targets, progress: c.lockT / (w.lockTime ?? 1.5), ready };
+}
+
+/** Relâchement de A : la salve part, un missile par cible verrouillée. */
+export function colossusSalveRelease(gs: GameState, c: Ship): boolean {
+  const w = WEAPONS.salve;
+  const targets = colossusLocks.get(c.id) ?? [];
+  const ready = c.lockT >= (w.lockTime ?? 1.5) && targets.length > 0
+    && c.weapons[0].cd <= 0 && c.energy >= w.energy;
+  if (ready) {
+    c.weapons[0].cd = w.cd;
+    c.energy -= w.energy;
+    targets.forEach((tid, i) => {
+      const t = shipById(gs, tid);
+      const dir = t ? norm(sub(t.pos, c.pos)) : fromAngle(c.heading + i);
+      const from = add(c.pos, fromAngle((i / COLOSSE_SALVO_SIZE) * Math.PI * 2, c.radius + 3));
+      makeProjectile(gs, c.team, 'missile', from, scale(dir, w.speed ?? 160), w.dmg, 3.2, tid);
+      gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'missile' });
+    });
+  }
+  c.lockT = 0;
+  colossusLocks.delete(c.id);
+  return ready;
+}
+
+/** Le Brise-Monde (E) : effondre le noyau de la planète visée. */
+export function colossusWorldBreaker(gs: GameState, c: Ship, aim: V2): string | null {
+  const w = WEAPONS.brise_monde;
+  const slot = c.weapons[1];
+  if (!slot || slot.cd > 0) return 'Brise-Monde en recharge';
+  if (c.energy < w.energy) return `Énergie insuffisante (${w.energy})`;
+  let planet: Planet | null = null, bd = 120;
+  for (const pl of gs.planets) {
+    if (!pl.alive || pl.dyingT > 0) continue;
+    if (dist(pl.pos, c.pos) > w.range) continue;
+    const d = dist(pl.pos, aim) - pl.radius;
+    if (d < bd) { bd = d; planet = pl; }
+  }
+  if (!planet) return 'Aucune planète à portée sous le curseur';
+  slot.cd = w.cd;
+  c.energy -= w.energy;
+  planet.dyingT = 6;
+  gs.fx.push({ type: 'frappe', pos: { ...planet.pos }, size: planet.radius });
+  gs.fx.push({ type: 'rayon', pos: { ...c.pos }, pos2: { ...planet.pos }, color: 0xff2222, size: 6 });
+  addLog(gs, `BRISE-MONDE : le noyau de ${planet.name} s'effondre !`, '#ff2222');
   return null;
 }
 

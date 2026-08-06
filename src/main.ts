@@ -9,6 +9,7 @@ import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
+  colossusLockTick, colossusSalveRelease, colossusWorldBreaker,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
   tryUpgradePlanet, requestDefend,
 } from './sim';
@@ -167,9 +168,34 @@ function handleInput(dt: number) {
   }
 
   // ---------- Tir & verrouillage missile ----------
+  // Le COLOSSE a ses propres commandes : rayons automatiques,
+  // A = salve multi-cibles, E = Brise-Monde
+  if (!tactical && ship && ship.cls === 'colosse') {
+    if (input.down('KeyQ')) {
+      const st = colossusLockTick(gs, ship, dt);
+      renderer.setMultiLock(st);
+      if (st.targets.length > 0) {
+        lockTickT -= dt;
+        if (!st.ready && lockTickT <= 0) { sfx.lockTick(); lockTickT = 0.14; }
+        if (st.ready && !lockWasReady) sfx.lockOn();
+        lockWasReady = st.ready;
+      }
+    } else {
+      if (ship.lockT > 0) {
+        if (colossusSalveRelease(gs, ship)) sfx.shoot('missile');
+        lockWasReady = false;
+      }
+      renderer.setMultiLock(null);
+    }
+    if (input.pressed('KeyE')) {
+      const err = colossusWorldBreaker(gs, ship, aim);
+      if (err) { sfx.error(); hud.flashHint(err); } else sfx.bigBoom();
+    }
+  }
+
   const hasMissile = ship ? missileSlot(ship) >= 0 : false;
   let locking = false;
-  if (!tactical && ship) {
+  if (!tactical && ship && ship.cls !== 'colosse') {
     // A maintenu : verrouillage missile (bloque les autres armes pendant la charge)
     if (input.down('KeyQ') && hasMissile) {
       locking = true;
@@ -213,9 +239,9 @@ function handleInput(dt: number) {
       if (input.down('KeyQ') && !hasMissile) fireShipWeapon(gs, ship, 1, aim);  // A en AZERTY
       if (input.down('KeyE')) fireShipWeapon(gs, ship, 2, aim);
     }
-  } else {
+  } else if (!ship || tactical) {
     renderer.setLockState(null);
-    if (ship && ship.lockT > 0 && ship.id === gs.playerShipId) lockCancel(ship);
+    if (ship && ship.lockT > 0 && ship.id === gs.playerShipId && ship.cls !== 'colosse') lockCancel(ship);
   }
 
   // ---------- Minage manuel ----------

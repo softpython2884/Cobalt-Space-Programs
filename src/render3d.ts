@@ -39,6 +39,7 @@ const CLASS_SHAPE: Record<ShipClassId, string> = {
   croiseur: 'penta',      // pentagone pointé vers l'avant
   mineur: 'losange',      // losange
   cargo: 'hole',          // petit carré troué (le grand carré = bâtiments)
+  colosse: 'octa',        // le monstre
   transporteur: 'house',  // pentagone maison
   raider: 'tri_rect',     // triangle rectangle
 };
@@ -225,41 +226,54 @@ export class Renderer3D {
     this.aimGroup.add(this.aimArc, this.aimArrow);
   }
 
-  // ---------- Réticule de verrouillage missile ----------
+  // ---------- Réticules de verrouillage missile (multi-cibles pour le Colosse) ----------
   private lockGroup = new THREE.Group();
-  private lockRing: THREE.Mesh | null = null;
-  private lockInfo: { targetId: number; progress: number; ready: boolean } | null = null;
+  private lockAdded = false;
+  private lockInfo: { targets: number[]; progress: number; ready: boolean } | null = null;
   setLockState(info: { targetId: number; progress: number; ready: boolean } | null) {
-    this.lockInfo = info;
+    this.lockInfo = info && info.targetId >= 0
+      ? { targets: [info.targetId], progress: info.progress, ready: info.ready }
+      : null;
+  }
+  setMultiLock(info: { targets: number[]; progress: number; ready: boolean } | null) {
+    this.lockInfo = info && info.targets.length > 0 ? info : null;
   }
   private updateLockReticle(gs: GameState) {
-    if (!this.lockRing) {
-      this.lockRing = new THREE.Mesh(
+    if (!this.lockAdded) { this.scene.add(this.lockGroup); this.lockAdded = true; }
+    const info = this.lockInfo;
+    if (!info) { this.lockGroup.visible = false; return; }
+    this.lockGroup.visible = true;
+    // pool d'anneaux : un par cible
+    while (this.lockGroup.children.length < info.targets.length) {
+      const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.86, 1, 4),
         new THREE.MeshBasicMaterial({ color: 0xff4b4b, transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
       );
-      this.lockRing.rotation.x = -Math.PI / 2;
-      this.lockGroup.add(this.lockRing);
-      this.scene.add(this.lockGroup);
+      ring.rotation.x = -Math.PI / 2;
+      this.lockGroup.add(ring);
     }
-    const info = this.lockInfo;
-    const target = info && info.targetId >= 0
-      ? (gs.ships.find(x => x.id === info.targetId && x.alive) ?? gs.structures.find(x => x.id === info.targetId && x.alive))
-      : undefined;
-    if (!info || !target) { this.lockGroup.visible = false; return; }
-    this.lockGroup.visible = true;
-    this.lockGroup.position.set(target.pos.x, 2, target.pos.y);
-    const r = target.radius + 6;
-    this.lockRing.scale.setScalar(r + (1 - info.progress) * 14);
-    this.lockRing.rotation.z += 0.05;
-    const m = this.lockRing.material as THREE.MeshBasicMaterial;
-    if (info.ready) {
-      m.color.setHex(0x6dff8a);
-      m.opacity = Math.sin(this.time * 18) > 0 ? 1 : 0.4;
-    } else {
-      m.color.setHex(0xff4b4b).lerp(new THREE.Color(0x6dff8a), info.progress * 0.6);
-      m.opacity = 0.9;
-    }
+    this.lockGroup.position.set(0, 0, 0);
+    this.lockGroup.children.forEach((child, i) => {
+      const ring = child as THREE.Mesh;
+      const tid = info.targets[i];
+      const target = tid !== undefined
+        ? (gs.ships.find(x => x.id === tid && x.alive) ?? gs.structures.find(x => x.id === tid && x.alive))
+        : undefined;
+      ring.visible = !!target;
+      if (!target) return;
+      ring.position.set(target.pos.x, 2, target.pos.y);
+      const r = target.radius + 6;
+      ring.scale.setScalar(r + (1 - info.progress) * 14);
+      ring.rotation.z += 0.05;
+      const m = ring.material as THREE.MeshBasicMaterial;
+      if (info.ready) {
+        m.color.setHex(0x6dff8a);
+        m.opacity = Math.sin(this.time * 18) > 0 ? 1 : 0.4;
+      } else {
+        m.color.setHex(0xff4b4b).lerp(new THREE.Color(0x6dff8a), info.progress * 0.6);
+        m.opacity = 0.9;
+      }
+    });
   }
 
   // ---------- Marqueurs du plan d'attaque ----------
@@ -505,7 +519,7 @@ export class Renderer3D {
       if (ring) ring.rotation.z += dt * 0.25;
       const drill = m.getObjectByName('drill');
       if (drill) drill.rotation.y += dt * 3;
-      const stShape = st.stype === 'station' ? 'octa' : st.stype === 'mine' ? 'trapeze'
+      const stShape = st.stype === 'station' ? 'octa' : st.stype === 'usine' ? 'octa' : st.stype === 'mine' ? 'trapeze'
         : st.stype === 'labo' ? 'hexa' : st.stype === 'satellite' ? 'semi'
         : st.stype === 'depot' ? 'square' : 'square';
       this.syncIcon(st.id, st.pos, stShape, teamColorOf(st.team), tactical, 0);
@@ -915,6 +929,24 @@ export class Renderer3D {
           this.scene.add(line);
           this.beams.push({ line, life: 0.22, maxOpacity: 1 });
           this.spawnParticles(new THREE.Vector3(fx.pos2.x, 3, fx.pos2.y), 0xc86bff, 16, 34, 0.4, 2.4);
+          break;
+        }
+        case 'rayon': {
+          if (!fx.pos2) break;
+          // gros rayon : ruban plat orienté, rendu additif
+          const dx = fx.pos2.x - fx.pos.x, dz = fx.pos2.y - fx.pos.y;
+          const length = Math.hypot(dx, dz);
+          const geo = new THREE.PlaneGeometry(length, 2.2 + (fx.size ?? 2));
+          const m2 = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+            color: fx.color ?? 0xff2222, transparent: true, opacity: 0.85,
+            blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+          }));
+          m2.position.set((fx.pos.x + fx.pos2.x) / 2, 3, (fx.pos.y + fx.pos2.y) / 2);
+          m2.rotation.x = -Math.PI / 2;
+          m2.rotation.z = -Math.atan2(dz, dx);
+          this.scene.add(m2);
+          this.rings.push({ mesh: m2, life: 0.16, maxLife: 0.16, from: 1, to: 1 });
+          this.spawnParticles(new THREE.Vector3(fx.pos2.x, 3, fx.pos2.y), fx.color ?? 0xff2222, 3, 20, 0.25, 2.2);
           break;
         }
         case 'stase_fx': {

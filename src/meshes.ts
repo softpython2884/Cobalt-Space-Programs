@@ -228,6 +228,38 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       g.add(engineFlame(0x7adfff, -4.9, -2.4, 0.6));
       break;
     }
+    case 'colosse': {
+      // cathédrale de guerre : coque massive, 5 pylônes-émetteurs rouges
+      g.add(box(26, 4.5, 8, mid));
+      g.add(box(14, 3.5, 11, dark, -3, -0.5, 0));
+      g.add(cone(3.6, 7, 4, light, 16.5));
+      g.add(box(7, 2.4, 9.5, accent, 8, -0.8, 0));
+      // épine dorsale surélevée
+      g.add(box(18, 2.2, 3, light, -1, 3, 0));
+      // les 5 émetteurs de rayons (rouges, incandescents)
+      const emitterM = mat(0xff2222, { emissive: 0xff2222, emissiveIntensity: 1.6 });
+      for (let i = 0; i < 5; i++) {
+        const x = 10 - i * 5;
+        g.add(cyl(0.9, 1.3, 3, 6, dark, x, 4.6, 0));
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(1.15, 8, 6), emitterM);
+        orb.position.set(x, 6.6, 0);
+        orb.name = i === 0 ? 'blink' : '';
+        g.add(orb);
+      }
+      // rampes de missiles latérales
+      for (const side of [4.8, -4.8]) {
+        g.add(box(9, 1.8, 2, dark, 1, 1.2, side));
+        for (let i = 0; i < 4; i++) {
+          g.add(cyl(0.42, 0.42, 1.6, 6, mat(0xff7ad8, { emissive: 0xff7ad8, emissiveIntensity: 0.8 }), 4.4 - i * 2.2, 2.1, side));
+        }
+      }
+      // liserés d'équipe
+      g.add(box(20, 0.7, 9.6, accent, -2, -2.4, 0));
+      g.add(engineFlame(0xff5d2a, -14.5, 0, 2.4));
+      g.add(engineFlame(0xff5d2a, -14, 0, 3.4));
+      g.add(engineFlame(0xff5d2a, -14, 0, -3.4));
+      break;
+    }
     case 'raider': {
       g.add(box(5.5, 1.2, 1.6, dark));
       g.add(cone(0.8, 3, 3, mat(0x9aa0a8, { metalness: 0.5 }), 4));
@@ -310,6 +342,38 @@ export function buildStructure(stype: StructType, teamColor: number): THREE.Grou
         g.add(tip);
       }
       g.add(box(2, 1.4, 2, accent, 0, 0.5, 6.5));
+      break;
+    }
+    case 'usine': {
+      // chantier naval : portique + carcasse de colosse en cours d'assemblage
+      g.add(box(26, 2, 3, dark, 0, 8, 7));
+      g.add(box(26, 2, 3, dark, 0, 8, -7));
+      for (const x of [-11, 0, 11]) {
+        g.add(box(2, 9, 2, mid, x, 4, 7));
+        g.add(box(2, 9, 2, mid, x, 4, -7));
+        g.add(box(2, 2, 16, dark, x, 9, 0));
+      }
+      // carcasse en chantier (lueur d'assemblage)
+      g.add(box(18, 3, 5.5, mat(0x46536b, { metalness: 0.4 }), 0, 2, 0));
+      const glow2 = new THREE.Mesh(new THREE.BoxGeometry(18.4, 3.4, 5.9),
+        mat(0x7adfff, { emissive: 0x7adfff, emissiveIntensity: 0.7, transparent: true, opacity: 0.25 }));
+      glow2.position.y = 2;
+      glow2.name = 'blink';
+      g.add(glow2);
+      g.add(box(3, 5, 3, accent, 12, 2.5, 9));
+      break;
+    }
+    case 'depot': {
+      // silo de stockage : gros cylindre cerclé + quai
+      g.add(cyl(6.5, 6.5, 7, 8, mid, 0, 1, 0));
+      for (const y of [-1, 1.5, 4]) {
+        const hoop = new THREE.Mesh(new THREE.TorusGeometry(6.6, 0.4, 6, 12), accent);
+        hoop.rotation.x = Math.PI / 2;
+        hoop.position.y = y;
+        g.add(hoop);
+      }
+      g.add(box(9, 1.2, 4, dark, 8, -1, 0));
+      g.add(box(2, 3, 2, light, 11, 0.5, 0));
       break;
     }
     case 'satellite': {

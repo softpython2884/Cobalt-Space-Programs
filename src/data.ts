@@ -36,6 +36,8 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   plasma: { id: 'plasma', nom: 'Canon à plasma', type: 'proj', dmg: 22, cd: 1.1, range: 210, energy: 9, speed: 200, aoe: 10, color: 0x6dff8a, prix: 450, desc: 'Gros dégâts de zone.' },
   canon_lourd: { id: 'canon_lourd', nom: 'Canon lourd', type: 'proj', dmg: 30, cd: 1.5, range: 250, energy: 11, speed: 230, color: 0xffb35d, prix: 600, desc: 'L\'artillerie des croiseurs.' },
   missile: { id: 'missile', nom: 'Missile guidé', type: 'homing', dmg: 30, cd: 5, range: 340, energy: 12, speed: 150, aoe: 12, lockTime: 1.2, color: 0xff7ad8, prix: 0, desc: 'Maintenir A : verrouille la cible, relâcher : tir.' },
+  salve: { id: 'salve', nom: 'Salve de l\'Apocalypse', type: 'homing', dmg: 26, cd: 10, range: 380, energy: 60, speed: 160, aoe: 12, lockTime: 1.5, color: 0xff7ad8, prix: 0, desc: '8 missiles, 8 cibles verrouillées simultanément.' },
+  brise_monde: { id: 'brise_monde', nom: 'Brise-Monde', type: 'beam', dmg: 0, cd: 120, range: 430, energy: 300, color: 0xff2222, prix: 0, desc: 'Fait s\'effondrer le noyau d\'une planète.' },
 };
 
 // ---------- Classes de vaisseaux ----------
@@ -111,6 +113,7 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     prix: 450, unlockLevel: 1, power: 3, civil: true, canMine: false, canColonize: true,
     desc: 'Le seul capable de coloniser une planète.',
   },
+  colosse: null as unknown as ShipClassDef,   // rempli juste après (auto-référence)
   raider: {
     id: 'raider', nom: 'Raider pirate', role: 'Pillage',
     hull: 65, shield: 30, energy: 85, speed: 85, accel: 170, turn: 5.5,
@@ -120,7 +123,17 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     desc: 'Chasse les convois isolés.',
   },
 };
+
 export const BUYABLE_SHIPS: ShipClassId[] = ['corvette', 'chasseur', 'mineur', 'cargo', 'transporteur', 'bombardier', 'croiseur'];
+const COLOSSE_DEF: ShipClassDef = {
+  id: 'colosse', nom: 'COLOSSE', role: 'Arme de destruction massive',
+  hull: 950, shield: 420, energy: 520, speed: 30, accel: 45, turn: 1.2,
+  radius: 16, sensor: 420, cargo: 50,
+  weapons: ['salve', 'brise_monde'], secondarySlots: 0, mineType: 'emp', mineMax: 6,
+  prix: 0, unlockLevel: 99, power: 120, civil: false, canMine: false, canColonize: false,
+  desc: '5 rayons automatiques, 8 missiles simultanés, et le Brise-Monde.',
+};
+SHIP_CLASSES.colosse = COLOSSE_DEF;
 
 // ---------- Mines larguées ----------
 export interface MineDef { id: MineType; nom: string; dmg: number; radius: number; fuse: number; color: number; desc: string }
@@ -143,6 +156,7 @@ export const STRUCTS: Record<StructType, StructDef> = {
   mine: { stype: 'mine', nom: 'Mine spatiale', hull: 200, shield: 40, radius: 10, sensor: 140, prix: 400, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Revenu passif si placée près d\'astéroïdes.' },
   satellite: { stype: 'satellite', nom: 'Satellite', hull: 60, shield: 20, radius: 5, sensor: 420, prix: 150, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Œil lointain, très fragile.' },
   labo: { stype: 'labo', nom: 'Laboratoire', hull: 260, shield: 140, radius: 11, sensor: 180, prix: 700, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Gros revenus, mais doit être bâti DANS un nuage électrique.' },
+  usine: { stype: 'usine', nom: 'Usine d\'assemblage', hull: 850, shield: 250, radius: 16, sensor: 220, prix: 2000, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Requiert 5 laboratoires. 4 min de chantier ANNONCÉ À TOUS — survivez et devenez le COLOSSE.' },
   depot: { stype: 'depot', nom: 'Dépôt', hull: 320, shield: 80, radius: 10, sensor: 160, prix: 350, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Vos mineurs y déchargent sur place ; la valeur s\'écoule à débit limité.' },
 };
 
@@ -161,16 +175,21 @@ export const ALLY_TRADE_MULT = 3;         // commerce avec une colonie alliée :
 export const ALLIANCE_DURATION = 900;     // 15 min, renouvelable dans les 2 dernières
 export const PLANET_UPGRADE_COST = 150;
 export const PLANET_UPGRADE_HP = 260;     // +vie de colonie par niveau (max 1200)
+export const COLOSSE_LABS_REQUIRED = 5;   // laboratoires vivants requis pour l'usine
+export const COLOSSE_BUILD_TIME = 240;    // 4 min de chantier sous les projecteurs
+export const COLOSSE_RAY_COUNT = 5;
+export const COLOSSE_RAY_RANGE = 280;
+export const COLOSSE_SALVO_SIZE = 8;
 export const MINE_INCOME_PERIOD = 12;
 export const PASSIVE_INCOME = 12;         // crédits / 10 s (station vivante)
 export const PASSIVE_INCOME_PERIOD = 10;
 export const COLONIZE_COST = 300;
 export const COLONIZE_TIME = 8;
 export const KILL_BOUNTY: Record<ShipClassId, number> = {
-  corvette: 40, chasseur: 45, bombardier: 80, croiseur: 150, mineur: 35, cargo: 50, transporteur: 55, raider: 60,
+  corvette: 40, chasseur: 45, bombardier: 80, croiseur: 150, mineur: 35, cargo: 50, transporteur: 55, raider: 60, colosse: 800,
 };
 export const WRECK_VALUE: Record<ShipClassId, number> = {
-  corvette: 35, chasseur: 30, bombardier: 60, croiseur: 120, mineur: 45, cargo: 70, transporteur: 55, raider: 40,
+  corvette: 35, chasseur: 30, bombardier: 60, croiseur: 120, mineur: 45, cargo: 70, transporteur: 55, raider: 40, colosse: 400,
 };
 export const MINE_RESTOCK_PRICE = 30;
 export const TRADE_PROFIT = 90;           // par livraison cargo → planète → retour

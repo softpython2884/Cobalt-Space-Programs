@@ -289,6 +289,10 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 /** Choisit une cible d'attaque : civils (raid), colonies/structures (harcèlement), stations (fin de partie). */
 function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number): number | null {
   const tune = DIFF_TUNING[gs.cfg.difficulty];
+  // PRIORITÉ ABSOLUE : un chantier de Colosse ennemi doit tomber (ignore toute grâce)
+  const usine = gs.structures.find(st => st.alive && st.stype === 'usine' && st.buildT > 0
+    && isEnemy(teamId, st.team));
+  if (usine) return usine.id;
   if (minute < tune.harassMin) return null;
   // période de grâce : l'IA laisse le joueur s'installer avant de le viser
   const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id)

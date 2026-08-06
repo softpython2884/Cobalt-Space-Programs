@@ -80,7 +80,7 @@ export function newGame(cfg: MatchConfig): GameState {
       isAI: i !== cfg.playerColorIdx,
       persona, alive: isActive, stationId: -1,
       upgrades: {}, gadgets: ['fumee'], gadgetCd: {},
-      secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, score: 0, kills: 0,
+      secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, score: 0, kills: 0, colossusUsed: false,
     };
     gs.teams.push(team);
   }

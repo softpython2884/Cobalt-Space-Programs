@@ -539,7 +539,7 @@ export class HUD {
     const box = $('build-list');
     box.innerHTML = '';
     const team = gs.teams[gs.playerTeam];
-    (['avantposte', 'mine', 'satellite', 'labo'] as StructType[]).forEach(stype => {
+    (['avantposte', 'mine', 'satellite', 'labo', 'depot', 'usine'] as StructType[]).forEach(stype => {
       const def = STRUCTS[stype];
       const item = document.createElement('div');
       const afford = team.credits >= def.prix;
