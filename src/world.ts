@@ -58,6 +58,7 @@ export function newGame(cfg: MatchConfig): GameState {
     alliances: new Set(), allianceSince: {}, diploOffers: [], focusTargets: {},
     storms: [], stormT: 480 + rng() * 120,
     meteors: [], meteorT: 480,
+    colossusBeams: [],
     plan: { filter: 'tout', objective: null, armed: false },
     log: [], alertText: '', alertT: 0, alertColor: '#ff4b4b',
   };

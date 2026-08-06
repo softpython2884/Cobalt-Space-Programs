@@ -324,6 +324,7 @@ export interface GameState {
   stormT: number;              // prochain spawn de nuage
   meteors: Meteor[];           // météores en vol
   meteorT: number;             // prochaine pluie de météores
+  colossusBeams: { x1: number; y1: number; x2: number; y2: number; heat: number }[];  // rayons actifs (rendu)
   plan: PlanState;             // plan d'attaque du joueur
 
   log: { t: number; text: string; color: string }[];

@@ -1241,7 +1241,7 @@ function updateStructures(gs: GameState, dt: number) {
     }
     if (st.stype === 'mine' && st.incomeT >= MINE_INCOME_PERIOD) {
       st.incomeT = 0;
-      const nearRoid = gs.roids.some(r => r.alive && dist(r.pos, st.pos) < 150);
+      const nearRoid = gs.roids.some(r => r.alive && dist(r.pos, st.pos) < 320);
       if (nearRoid) team.credits += Math.round(MINE_INCOME * mult);
     }
     if (st.stype === 'depot' && depotLoad(st) > 0) {
@@ -1639,14 +1639,16 @@ export function canPlaceStructure(gs: GameState, teamId: number, stype: StructTy
     }
   } else {
     // dans le territoire : à portée d'une structure existante
+    // (les mines spatiales ont un rayon de déploiement bien plus large)
+    const reach = stype === 'mine' ? 1.8 : 1;
     const near = gs.structures.some(st => st.alive && st.team === teamId &&
-      dist(st.pos, pos) < (st.stype === 'station' ? 420 : 300));
+      dist(st.pos, pos) < (st.stype === 'station' ? 420 : 300) * reach);
     if (!near) return 'Trop loin de votre territoire';
   }
   for (const st of gs.structures) if (st.alive && dist(st.pos, pos) < st.radius + def.radius + 18) return 'Trop proche d\'une structure';
   for (const p of gs.planets) if (p.alive && dist(p.pos, pos) < p.radius + def.radius + 10) return 'Trop proche d\'une planète';
   for (const b of gs.map.bodies) if (dist(b.pos, pos) < gs.map.killRadius + 40) return 'Trop proche de l\'étoile';
-  if (stype === 'mine' && !gs.roids.some(r => r.alive && dist(r.pos, pos) < 150)) return 'Doit être proche d\'astéroïdes';
+  if (stype === 'mine' && !gs.roids.some(r => r.alive && dist(r.pos, pos) < 320)) return 'Doit être à moins de 320 m d\'astéroïdes';
   return null;
 }
 
@@ -2042,6 +2044,7 @@ const rayFxT = new Map<number, number>();      // throttle des effets par coloss
 const colossusLocks = new Map<number, number[]>();
 
 function updateColossus(gs: GameState, dt: number) {
+  gs.colossusBeams.length = 0;
   for (const c of gs.ships) {
     if (!c.alive || c.cls !== 'colosse') continue;
     // cibles : jusqu'à 5 ennemis distincts à portée
@@ -2056,8 +2059,6 @@ function updateColossus(gs: GameState, dt: number) {
       if (targets.length >= COLOSSE_RAY_COUNT) break;
       targets.push(t);
     }
-    const fxDue = (rayFxT.get(c.id) ?? 0) - dt;
-    rayFxT.set(c.id, fxDue <= 0 ? 0.12 : fxDue);
     for (const t of targets) {
       if (c.energy < 6) break;
       const key = `${c.id}:${t.id}`;
@@ -2066,9 +2067,8 @@ function updateColossus(gs: GameState, dt: number) {
       const dmg = (7 + heat * 5) * dt;
       applyDamage(gs, t, dmg, c.team);
       c.energy = Math.max(0, c.energy - (2.2 + heat * 1.3) * dt);
-      if (fxDue <= 0) {
-        gs.fx.push({ type: 'rayon', pos: { ...c.pos }, pos2: { ...t.pos }, color: 0xff2222, size: 2 + heat });
-      }
+      // faisceau continu : le rendu lit cet état à chaque frame
+      gs.colossusBeams.push({ x1: c.pos.x, y1: c.pos.y, x2: t.pos.x, y2: t.pos.y, heat });
     }
     // refroidissement des cibles hors faisceau
     const hot = new Set(targets.map(t => `${c.id}:${t.id}`));
@@ -2125,6 +2125,17 @@ export function colossusSalveRelease(gs: GameState, c: Ship): boolean {
   c.lockT = 0;
   colossusLocks.delete(c.id);
   return ready;
+}
+
+/** État lisible du Colosse pour le HUD (salve + Brise-Monde). */
+export function colossusStatus(gs: GameState, c: Ship): { salveCd: number; briseCd: number; briseEnergy: number; planetsInRange: number } {
+  const w = WEAPONS.brise_monde;
+  return {
+    salveCd: c.weapons[0]?.cd ?? 0,
+    briseCd: c.weapons[1]?.cd ?? 0,
+    briseEnergy: w.energy,
+    planetsInRange: gs.planets.filter(pl => pl.alive && pl.dyingT === 0 && dist(pl.pos, c.pos) < w.range).length,
+  };
 }
 
 /** Le Brise-Monde (E) : effondre le noyau de la planète visée. */

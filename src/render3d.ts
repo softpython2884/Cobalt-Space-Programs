@@ -352,6 +352,7 @@ export class Renderer3D {
 
     this.syncStar(gs, dt);
     this.syncEntities(gs, visible, tactical, dt);
+    this.syncColossusBeams(gs);
     this.syncSmokes(gs);
     this.consumeFx(gs);
     this.updateEffects(dt);
@@ -813,6 +814,70 @@ export class Renderer3D {
     m = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
     this.iconTexCache.set(key, m);
     return m;
+  }
+
+  // ---------- Faisceaux du Colosse : fins, continus, chargés de puissance ----------
+  private colossusBeamPool: { core: THREE.Mesh; glow: THREE.Mesh }[] = [];
+  private syncColossusBeams(gs: GameState) {
+    const beams = gs.colossusBeams;
+    while (this.colossusBeamPool.length < beams.length) {
+      const core = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xfff0ee, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      const glow = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      core.rotation.x = -Math.PI / 2;
+      glow.rotation.x = -Math.PI / 2;
+      this.scene.add(core, glow);
+      this.colossusBeamPool.push({ core, glow });
+    }
+    this.colossusBeamPool.forEach((b, i) => {
+      const seg = beams[i];
+      b.core.visible = b.glow.visible = !!seg;
+      if (!seg) return;
+      const dx = seg.x2 - seg.x1, dz = seg.y2 - seg.y1;
+      const length = Math.hypot(dx, dz);
+      const mx = (seg.x1 + seg.x2) / 2, mz = (seg.y1 + seg.y2) / 2;
+      const rot = -Math.atan2(dz, dx);
+      // cœur : filet blanc-rosé fin qui vibre à peine ; halo : voile rouge qui enfle avec la chauffe
+      const pulse = 1 + Math.sin(this.time * 26 + i) * 0.12;
+      b.core.position.set(mx, 3, mz);
+      b.core.rotation.z = rot;
+      b.core.scale.set(length, 0.7 * pulse, 1);
+      b.glow.position.set(mx, 2.9, mz);
+      b.glow.rotation.z = rot;
+      b.glow.scale.set(length, (2.4 + seg.heat * 1.6) * pulse, 1);
+      (b.glow.material as THREE.MeshBasicMaterial).opacity = 0.18 + seg.heat * 0.09;
+      // gerbe d'impact
+      if (Math.random() < 0.35) {
+        this.spawnParticles(new THREE.Vector3(seg.x2, 3, seg.y2), 0xff5544, 1, 14 + seg.heat * 6, 0.2, 1.8);
+      }
+    });
+  }
+
+  // ---------- Halo des planètes à portée du Brise-Monde ----------
+  private breakerRings: THREE.Mesh[] = [];
+  setBreakerTargets(planets: { x: number; y: number; r: number }[]) {
+    while (this.breakerRings.length < planets.length) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.94, 1, 48),
+        new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      this.scene.add(ring);
+      this.breakerRings.push(ring);
+    }
+    this.breakerRings.forEach((ring, i) => {
+      const pl = planets[i];
+      ring.visible = !!pl;
+      if (!pl) return;
+      ring.position.set(pl.x, 1.5, pl.y);
+      ring.scale.setScalar(pl.r * (1.5 + Math.sin(this.time * 4) * 0.08));
+      (ring.material as THREE.MeshBasicMaterial).opacity = 0.35 + Math.sin(this.time * 4) * 0.15;
+    });
   }
 
   // ---------- Fumée ----------

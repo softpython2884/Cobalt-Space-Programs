@@ -10,6 +10,7 @@ import {
 } from './data';
 import {
   tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, playerShip, teamScore,
+  colossusStatus,
 } from './sim';
 import { fleetShips, missionLabel } from './orders';
 import { sfx } from './sfx';
@@ -288,7 +289,18 @@ export class HUD {
       this.setBar('bar-shield', 'txt-shield', ship.shield, ship.shieldMax);
       this.setBar('bar-energy', 'txt-energy', ship.energy, ship.energyMax);
       const cls = SHIP_CLASSES[ship.cls];
-      $('txt-ship').textContent = `${cls.nom}${ship.mineCount > 0 ? ` · ${ship.mineCount} mine(s) ${MINES[ship.mineType!]?.nom.split(' ').pop() ?? ''}` : ''}`;
+      let shipTxt = `${cls.nom}${ship.mineCount > 0 ? ` · ${ship.mineCount} mine(s) ${MINES[ship.mineType!]?.nom.split(' ').pop() ?? ''}` : ''}`;
+      if (ship.cls === 'colosse') {
+        // lisibilité du Brise-Monde et de la salve : état affiché en permanence
+        const cs = colossusStatus(gs, ship);
+        const salve = cs.salveCd > 0 ? `salve ${Math.ceil(cs.salveCd)}s` : 'salve PRÊTE (A)';
+        const brise = cs.briseCd > 0 ? `Brise-Monde ${Math.ceil(cs.briseCd)}s`
+          : ship.energy < cs.briseEnergy ? `Brise-Monde : énergie ${Math.floor(ship.energy)}/${cs.briseEnergy}`
+          : cs.planetsInRange > 0 ? `Brise-Monde PRÊT (E) — ${cs.planetsInRange} planète(s) à portée`
+          : 'Brise-Monde prêt — aucune planète à portée';
+        shipTxt = `COLOSSE · ${salve} · ${brise}`;
+      }
+      $('txt-ship').textContent = shipTxt;
       $('txt-cargo').textContent =
         `${Math.floor(ship.cargo.roche)} roche · ${Math.floor(ship.cargo.minerai)} minerai · ${Math.floor(ship.cargo.gaz)} gaz ` +
         `(${Math.floor(ship.cargo.roche + ship.cargo.minerai + ship.cargo.gaz)}/${ship.cargoMax})`;

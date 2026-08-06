@@ -9,7 +9,7 @@ import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
-  colossusLockTick, colossusSalveRelease, colossusWorldBreaker,
+  colossusLockTick, colossusSalveRelease, colossusWorldBreaker, colossusStatus,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
   tryUpgradePlanet, requestDefend,
 } from './sim';
@@ -826,6 +826,19 @@ function frame(now: number) {
     window.setTimeout(() => sfx.siren(), 1100);
     gs.alertText = 'VOTRE STATION EST ATTAQUÉE';
     gs.alertT = 4.5;
+  }
+
+  // halos rouges : planètes à portée du Brise-Monde quand il est prêt
+  const pShip2 = playerShip(gs);
+  if (pShip2 && pShip2.cls === 'colosse') {
+    const cs = colossusStatus(gs, pShip2);
+    const ready = cs.briseCd <= 0 && pShip2.energy >= cs.briseEnergy;
+    renderer.setBreakerTargets(ready
+      ? gs.planets.filter(pl => pl.alive && pl.dyingT === 0 && dist(pl.pos, pShip2.pos) < 430)
+          .map(pl => ({ x: pl.pos.x, y: pl.pos.y, r: pl.radius }))
+      : []);
+  } else {
+    renderer.setBreakerTargets([]);
   }
 
   // marqueurs et état du plan (vue tactique)
