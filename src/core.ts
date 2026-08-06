@@ -54,7 +54,7 @@ export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 
 // ---------- Identifiants de données (définis dans data.ts) ----------
 export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider';
-export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd';
+export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile';
 export type MineType = 'frag' | 'emp' | 'aimant';
 export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite';
 export type PlanetType = 'tellurique' | 'glace' | 'lave' | 'gazeuse' | 'oceanique' | 'desert';
@@ -65,7 +65,9 @@ export type ShipMode = 'normal' | 'croisiere' | 'radar' | 'espion';
 export type GadgetId = 'fumee' | 'camouflage' | 'frappe' | 'soutien' | 'bouclier_orbital';
 
 // ---------- Ordres ----------
-export type OrderKind = 'idle' | 'move' | 'attack' | 'mine' | 'trade' | 'escort' | 'colonize' | 'guard' | 'dock' | 'flee' | 'salvage';
+// (les 4 derniers sont des missions de flotte, jamais des ordres de vaisseau)
+export type OrderKind = 'idle' | 'move' | 'attack' | 'mine' | 'trade' | 'escort' | 'colonize' | 'guard' | 'dock' | 'flee' | 'salvage'
+  | 'mine_auto' | 'patrol_in' | 'patrol_border' | 'patrol_out';
 export interface Order {
   kind: OrderKind;
   pos?: V2;            // destination (move/guard)
@@ -98,6 +100,8 @@ export interface Ship {
   isFlagship: boolean;
   alive: boolean;
   supportT: number;               // >0 : vaisseau de soutien temporaire, disparaît à 0
+  lockT: number;                  // progression du verrouillage missile (s)
+  lockTargetId: number;           // cible du verrouillage (-1 = aucune)
   miningRes: Res | null;          // ressource en cours de minage (visuel)
   colonizeT: number;              // canal de colonisation en cours
   tradePhase: 0 | 1;              // 0 = va vers la planète, 1 = retourne à la station
@@ -113,6 +117,7 @@ export interface Structure {
   level: number;                  // niveau de station (1..3)
   fireCd: number;
   incomeT: number;
+  lastDmgT: number;               // le bouclier ne régénère qu'après 10 s sans dégât
   alive: boolean;
 }
 
@@ -123,6 +128,7 @@ export interface Planet {
   owner: number;                  // NO_TEAM si neutre
   colonyHp: number; colonyHpMax: number;
   incomeT: number;
+  dyingT: number;                 // >0 : frappe orbitale reçue, explose à 0
   alive: boolean;
 }
 
@@ -157,7 +163,7 @@ export interface Projectile {
 export interface MineEnt {
   id: number;
   team: number; mtype: MineType;
-  pos: V2; timer: number; armed: number;
+  pos: V2; vel: V2; timer: number; armed: number;
   alive: boolean;
 }
 
@@ -201,6 +207,23 @@ export interface Fleet {
   members: number[];      // ids de vaisseaux (hors chef)
   formation: FormationId;
   mission: Order;
+  patrolAngle: number;    // progression des patrouilles / rotation des points
+}
+
+// ---------- Diplomatie ----------
+export interface DiploOffer {
+  id: number;
+  from: number; to: number;
+  type: 'alliance' | 'target';
+  target?: number;        // équipe à cibler (type 'target')
+  expiresT: number;       // temps sim d'expiration
+}
+
+export const allyKey = (a: number, b: number) => a < b ? `${a}-${b}` : `${b}-${a}`;
+export function areAllied(gs: GameState, a: number, b: number): boolean {
+  if (a === b) return true;
+  if (a < 0 || b < 0 || a === PIRATE_TEAM || b === PIRATE_TEAM) return false;
+  return gs.alliances.has(allyKey(a, b));
 }
 
 // ---------- Config de partie ----------
@@ -261,6 +284,10 @@ export interface GameState {
   neutronT: number;            // compte à rebours prochaine impulsion
   pirateT: number;             // prochain raid pirate
   supernovaWave: number;       // rayon de l'onde (-1 = pas déclenchée)
+
+  alliances: Set<string>;      // paires alliées (allyKey)
+  diploOffers: DiploOffer[];   // propositions en attente (surtout vers le joueur)
+  focusTargets: Record<number, number>;  // équipe -> cible convenue avec un allié
 
   log: { t: number; text: string; color: string }[];
   alertText: string; alertT: number;

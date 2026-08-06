@@ -78,15 +78,35 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       break;
     }
     case 'chasseur': {
-      g.add(box(5.5, 1.1, 1.7, mid));
-      g.add(cone(0.9, 2.6, 4, accent, 3.9));
-      // ailes delta
-      const wing = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 2.8, 0.35, 3), mat(HULL_MID));
-      wing.rotation.set(0, Math.PI, 0); wing.position.set(-1, 0, 0); wing.scale.set(1, 1, 2.6);
+      // fuselage effilé de type intercepteur delta
+      g.add(box(7, 1.0, 1.3, mid));
+      g.add(cone(0.7, 3.2, 4, accent, 4.9));
+      // verrière
+      const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.75, 6, 4),
+        mat(0x9fdcff, { emissive: 0x2a6f8f, emissiveIntensity: 0.5, metalness: 0.5 }));
+      canopy.position.set(1.4, 0.75, 0);
+      canopy.scale.set(1.9, 0.65, 0.85);
+      g.add(canopy);
+      // aile delta : plaque triangulaire pleine, pointe vers l'avant
+      const wing = new THREE.Mesh(new THREE.CylinderGeometry(3.7, 3.7, 0.26, 3), mat(HULL_DARK));
+      wing.rotation.y = Math.PI / 6;      // pointe du triangle vers +X
+      wing.scale.set(1.35, 1, 1.05);
+      wing.position.set(-1, -0.15, 0);
       g.add(wing);
-      g.add(box(1.6, 0.5, 6.4, accent, -1.5, 0.2, 0));
-      g.add(box(0.8, 1.6, 0.3, accent, -2.2, 0.7, 0));
-      g.add(engineFlame(0xffd27a, -3.2, 0, 0.8));
+      // liserés de couleur d'équipe le long des bords de fuite
+      g.add(box(3.6, 0.34, 0.6, accent, -1.3, 0, 1.75, 0.42));
+      g.add(box(3.6, 0.34, 0.6, accent, -1.3, 0, -1.75, -0.42));
+      // dérives jumelles inclinées
+      const finL = box(1.5, 1.5, 0.16, accent, -2.9, 0.8, 1.1);
+      finL.rotation.x = -0.35;
+      const finR = box(1.5, 1.5, 0.16, accent, -2.9, 0.8, -1.1);
+      finR.rotation.x = 0.35;
+      g.add(finL, finR);
+      // nacelles moteur
+      g.add(cyl(0.42, 0.55, 1.6, 6, light, -3, 0, 0.75));
+      g.add(cyl(0.42, 0.55, 1.6, 6, light, -3, 0, -0.75));
+      g.add(engineFlame(0xffd27a, -4.1, 0.75, 0.65));
+      g.add(engineFlame(0xffd27a, -4.1, -0.75, 0.65));
       break;
     }
     case 'bombardier': {
@@ -348,24 +368,60 @@ export function buildWreck(radius: number): THREE.Group {
 // ================================================================
 //  ASTRES CENTRAUX
 // ================================================================
+/** Texture radiale du disque d'accrétion (dégradé + stries). */
+function accretionTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d')!;
+  const grad = ctx.createRadialGradient(128, 128, 30, 128, 128, 128);
+  grad.addColorStop(0, 'rgba(255,244,214,0.95)');
+  grad.addColorStop(0.25, 'rgba(255,190,80,0.85)');
+  grad.addColorStop(0.55, 'rgba(255,110,40,0.55)');
+  grad.addColorStop(0.85, 'rgba(160,40,20,0.2)');
+  grad.addColorStop(1, 'rgba(80,10,5,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+  // stries orbitales
+  ctx.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 26; i++) {
+    const r = 34 + Math.random() * 92;
+    ctx.strokeStyle = `rgba(0,0,0,${0.12 + Math.random() * 0.25})`;
+    ctx.lineWidth = 1 + Math.random() * 2;
+    ctx.beginPath();
+    ctx.arc(128, 128, r, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2 + 2);
+    ctx.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+}
+
 export function buildStarBody(starType: StarType, radius: number, color: number): THREE.Group {
   const g = new THREE.Group();
   if (starType === 'trou_noir') {
-    const hole = new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    const hole = new THREE.Mesh(new THREE.SphereGeometry(radius, 28, 18), new THREE.MeshBasicMaterial({ color: 0x000000 }));
     g.add(hole);
-    // disque d'accrétion
+    // anneau de photons : liséré incandescent au bord de l'horizon
+    const photon = new THREE.Mesh(
+      new THREE.TorusGeometry(radius * 1.12, radius * 0.045, 8, 64),
+      new THREE.MeshBasicMaterial({ color: 0xfff4d6 }),
+    );
+    photon.rotation.x = Math.PI / 2;
+    photon.name = 'photon';
+    g.add(photon);
+    // grand disque d'accrétion texturé
+    const tex = accretionTexture();
     const disk = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 1.3, radius * 3.2, 48),
-      new THREE.MeshBasicMaterial({ color: 0xff8c42, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+      new THREE.RingGeometry(radius * 1.2, radius * 4.2, 72),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false }),
     );
     disk.rotation.x = -Math.PI / 2;
     disk.name = 'disk';
     g.add(disk);
+    // voile incliné (impression de lentille gravitationnelle)
     const disk2 = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 1.1, radius * 1.5, 48),
-      new THREE.MeshBasicMaterial({ color: 0xffd84b, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+      new THREE.RingGeometry(radius * 1.15, radius * 2.6, 72),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.65, side: THREE.DoubleSide, depthWrite: false }),
     );
-    disk2.rotation.x = -Math.PI / 2;
+    disk2.rotation.x = -Math.PI / 2 + 0.55;
     disk2.name = 'disk2';
     g.add(disk2);
     return g;
@@ -383,13 +439,25 @@ export function buildStarBody(starType: StarType, radius: number, color: number)
   corona.name = 'corona';
   g.add(corona);
   if (starType === 'neutron') {
-    // faisceaux polaires
-    const beamM = new THREE.MeshBasicMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.5 });
-    const b1 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.5, radius * 8, 6), beamM);
-    b1.position.y = radius * 4; b1.rotation.x = Math.PI;
-    const b2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.5, radius * 8, 6), beamM);
-    b2.position.y = -radius * 4;
-    g.add(b1, b2);
+    // pulsar : faisceaux jumeaux inclinés qui balaient l'espace (rotation dans le rendu)
+    const beams = new THREE.Group();
+    beams.name = 'beams';
+    const beamM = new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+    const b1 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 16, 8, 1, true), beamM);
+    b1.position.y = radius * 8; b1.rotation.x = Math.PI;
+    const b2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 16, 8, 1, true), beamM);
+    b2.position.y = -radius * 8;
+    beams.add(b1, b2);
+    beams.rotation.z = 0.5;   // axe magnétique désaxé
+    g.add(beams);
+    // disque de plasma équatorial
+    const pdisk = new THREE.Mesh(
+      new THREE.RingGeometry(radius * 1.6, radius * 3.4, 48),
+      new THREE.MeshBasicMaterial({ color: 0x7adfff, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    pdisk.rotation.x = -Math.PI / 2;
+    pdisk.name = 'disk';
+    g.add(pdisk);
   }
   return g;
 }

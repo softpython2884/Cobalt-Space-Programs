@@ -59,9 +59,27 @@
         <button class="tb-btn frm" data-frm="cercle">Demi-cercle</button>
         <button class="tb-btn frm" data-frm="colonne">Colonne</button>
       </div>
+      <div class="tb-section" id="tb-missions">
+        <span class="tb-label">Mission de flotte :</span>
+        <button class="tb-btn msn" data-msn="mine_auto">⛏ Minage auto</button>
+        <button class="tb-btn msn" data-msn="patrol_in">🛡 Patr. intérieure</button>
+        <button class="tb-btn msn" data-msn="patrol_border">🛡 Patr. bordure</button>
+        <button class="tb-btn msn" data-msn="patrol_out">🛡 Patr. extérieure</button>
+      </div>
       <div class="tb-section" id="tb-fleets"></div>
       <div class="tb-hint">Glisser : sélection · Clic droit : ordre contextuel · Molette : zoom</div>
     </div>
+
+    <!-- Panneau diplomatie -->
+    <div id="panel-diplo" class="side-panel hidden">
+      <h3>DIPLOMATIE <span class="kbd">J</span></h3>
+      <div id="diplo-list"></div>
+      <div class="panel-hint">Alliance : plus de tirs entre alliés, vision partagée, commerce avec leurs colonies, cibles communes.</div>
+    </div>
+    <!-- Offres diplomatiques entrantes -->
+    <div id="diplo-offers"></div>
+    <!-- Flash plein écran (supernova, explosions majeures) -->
+    <div id="flash" class="hidden"></div>
 
     <!-- Menu contextuel clic droit -->
     <div id="ctxmenu" class="hidden"></div>

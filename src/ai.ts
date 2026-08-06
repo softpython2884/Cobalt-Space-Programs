@@ -1,12 +1,15 @@
 // ============ COBALT SECTOR — IA des équipes (personnalités) & flotte pirate ============
 import {
   GameState, Ship, V2, v2, fromAngle, dist, len, scale, norm, sub, add, IDLE,
-  PIRATE_TEAM, WORLD_R, addLog, setAlert, shipById, structById,
+  PIRATE_TEAM, WORLD_R, addLog, setAlert, shipById, structById, areAllied,
 } from './core';
-import { SHIP_CLASSES, PERSONAS, STRUCTS, COLONIZE_COST, STATION_UPGRADE_PRICE } from './data';
+import { SHIP_CLASSES, PERSONAS, STRUCTS, COLONIZE_COST, STATION_UPGRADE_PRICE, DIFF_TUNING } from './data';
 import { makeShip, nearestShip, threatAround, canDetect, isEnemy } from './entities';
 import { createFleet, setFleetMission, fleetShips } from './orders';
-import { tryBuyShip, tryUpgradeStation, canPlaceStructure, placeStructure, teamScore } from './sim';
+import {
+  tryBuyShip, tryUpgradeStation, canPlaceStructure, placeStructure, teamScore,
+  proposeAlliance, requestFocus,
+} from './sim';
 
 // ================================================================
 //  PIRATES — la flotte grise
@@ -84,7 +87,7 @@ export function thinkTeams(gs: GameState, dt: number) {
     if (!team || !team.alive || !team.isAI) continue;
     team.aiCd -= dt;
     if (team.aiCd > 0) continue;
-    team.aiCd = 2.2 + gs.rng() * 1.2;
+    team.aiCd = (2.2 + gs.rng() * 1.2) * DIFF_TUNING[gs.cfg.difficulty].thinkMult;
     thinkOneTeam(gs, teamId);
   }
 }
@@ -92,6 +95,7 @@ export function thinkTeams(gs: GameState, dt: number) {
 function thinkOneTeam(gs: GameState, teamId: number) {
   const team = gs.teams[teamId];
   const persona = PERSONAS[team.persona];
+  const tune = DIFF_TUNING[gs.cfg.difficulty];
   const station = structById(gs, team.stationId);
   if (!station) return;
 
@@ -119,7 +123,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   const wantMiners = Math.round(1 + persona.ecoFocus * 2.5);
   const wantCargos = myPlanets.length > 0 ? Math.round(1 + persona.ecoFocus * 1.5) : 0;
   const wantTransporters = neutralPlanets.length > 0 && minute > 1.5 ? 1 : 0;
-  const wantWarships = Math.min(9, Math.round(1 + persona.aggression * 3 + minute / 3.5));
+  const wantWarships = Math.max(1, Math.min(9, Math.round((1 + persona.aggression * 3 + minute / 3.5) * tune.warshipMult)));
 
   // réserve d'argent selon la personnalité (+ budget gelé pour une colonisation en cours)
   const colonizeReserve = transporters.some(t => t.order.kind === 'colonize') ? COLONIZE_COST : 0;
@@ -179,6 +183,29 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     }
   }
 
+  // ---------- 5bis. DIPLOMATIE ----------
+  const myAllies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && areAllied(gs, teamId, id));
+  if (myAllies.length === 0 && minute > 3 && gs.rng() < 0.03) {
+    // menacé par une équipe bien plus forte ? cherche un partenaire (joueur compris)
+    const others = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive);
+    if (others.length >= 2) {
+      const myScore = teamScore(gs, teamId);
+      const strongest = others.reduce((x, y) => teamScore(gs, x) >= teamScore(gs, y) ? x : y);
+      if (teamScore(gs, strongest) > myScore * 1.1) {
+        const candidates = others.filter(id => id !== strongest);
+        const partner = candidates.reduce((x, y) => teamScore(gs, x) >= teamScore(gs, y) ? x : y, candidates[0]);
+        if (partner != null) proposeAlliance(gs, teamId, partner);
+      }
+    }
+  } else if (myAllies.length > 0 && gs.focusTargets[teamId] == null && gs.rng() < 0.04) {
+    // demande à l'allié de concentrer le feu sur le plus fort des ennemis
+    const foes = gs.activeTeams.filter(id => gs.teams[id].alive && id !== teamId && !areAllied(gs, teamId, id));
+    if (foes.length > 0) {
+      const strongest = foes.reduce((x, y) => teamScore(gs, x) >= teamScore(gs, y) ? x : y);
+      requestFocus(gs, teamId, myAllies[0], strongest);
+    }
+  }
+
   // ---------- 6. OFFENSIVE ----------
   const idleWar = warships.filter(w => w.order.kind === 'idle' || w.order.kind === 'guard');
   // nettoyage des pirates dans notre territoire
@@ -188,8 +215,8 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 
   // l'agressivité monte en fin de partie pour garantir une conclusion
-  const lateGame = Math.max(0, minute - 12) * 0.08;
-  const aggression = Math.min(1, persona.aggression + lateGame);
+  const lateGame = Math.max(0, minute - 12) * tune.lateRamp;
+  const aggression = Math.min(1, (persona.aggression + lateGame) * tune.aggroMult);
   const readyForWar = warships.length >= Math.max(2, wantWarships * 0.7);
 
   // flottes d'attaque existantes : retarder si la cible est morte
@@ -249,7 +276,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 
 /** Choisit une cible d'attaque : civils (raid), colonies/structures (harcèlement), stations (fin de partie). */
 function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number): number | null {
-  const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive);
+  const tune = DIFF_TUNING[gs.cfg.difficulty];
+  if (minute < tune.harassMin) return null;
+  const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id));
   if (enemies.length === 0) return null;
 
   // cible : 60 % l'équipe la plus faible (au score), 40 % la plus proche — évite
@@ -273,6 +302,9 @@ function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minut
       weakest = nearest;
     }
   }
+  // cible convenue avec un allié : priorité absolue
+  const focus = gs.focusTargets[teamId];
+  if (focus != null && gs.teams[focus]?.alive && !areAllied(gs, teamId, focus)) weakest = focus;
 
   // raid sur les civils
   if (gs.rng() < raidPref) {
@@ -284,13 +316,13 @@ function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minut
   // les sièges de station sont interdits avant la 6e minute
   const colony = gs.planets.find(p => p.alive && p.owner === weakest);
   const outpost = gs.structures.find(s => s.alive && s.team === weakest && s.stype !== 'station');
-  if (minute < 6) {
+  if (minute < tune.siegeMin) {
     if (colony) return colony.id;
     if (outpost) return outpost.id;
     const anyCiv = gs.ships.find(s => s.alive && enemies.includes(s.team) && SHIP_CLASSES[s.cls].civil && canDetect(gs, teamId, s));
     return anyCiv ? anyCiv.id : null;
   }
-  if (minute < 9 && gs.rng() < 0.5) {
+  if (minute < tune.siegeMin + 3 && gs.rng() < 0.5) {
     if (colony) return colony.id;
     if (outpost) return outpost.id;
   }

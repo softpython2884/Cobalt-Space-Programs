@@ -22,6 +22,7 @@ export interface WeaponDef {
   slowFactor?: number;     // stase
   slowDur?: number;
   aoe?: number;            // rayon d'explosion
+  lockTime?: number;       // verrouillage requis avant tir (missile)
   color: number;
   prix: number;
   desc: string;
@@ -34,6 +35,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   torpille: { id: 'torpille', nom: 'Torpille', type: 'homing', dmg: 42, cd: 2.4, range: 280, energy: 12, speed: 110, aoe: 18, color: 0x7adfff, prix: 500, desc: 'Lente, dévastatrice contre les structures.' },
   plasma: { id: 'plasma', nom: 'Canon à plasma', type: 'proj', dmg: 22, cd: 1.1, range: 210, energy: 9, speed: 200, aoe: 10, color: 0x6dff8a, prix: 450, desc: 'Gros dégâts de zone.' },
   canon_lourd: { id: 'canon_lourd', nom: 'Canon lourd', type: 'proj', dmg: 30, cd: 1.5, range: 250, energy: 11, speed: 230, color: 0xffb35d, prix: 600, desc: 'L\'artillerie des croiseurs.' },
+  missile: { id: 'missile', nom: 'Missile guidé', type: 'homing', dmg: 30, cd: 5, range: 340, energy: 12, speed: 150, aoe: 12, lockTime: 1.2, color: 0xff7ad8, prix: 0, desc: 'Maintenir A : verrouille la cible, relâcher : tir.' },
 };
 
 // ---------- Classes de vaisseaux ----------
@@ -57,7 +59,7 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     id: 'corvette', nom: 'Corvette', role: 'Polyvalent',
     hull: 100, shield: 60, energy: 100, speed: 68, accel: 130, turn: 4.5,
     radius: 5, sensor: 240, cargo: 25,
-    weapons: ['canon'], secondarySlots: 1, mineType: 'frag', mineMax: 2,
+    weapons: ['canon', 'missile'], secondarySlots: 2, mineType: 'frag', mineMax: 2,
     prix: 250, unlockLevel: 1, power: 10, civil: false, canMine: true, canColonize: false,
     desc: 'Le vaisseau de départ. Solide, sans éclat.',
   },
@@ -65,7 +67,7 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     id: 'chasseur', nom: 'Chasseur', role: 'Interception',
     hull: 70, shield: 45, energy: 90, speed: 92, accel: 190, turn: 6,
     radius: 4, sensor: 260, cargo: 10,
-    weapons: ['canon_auto'], secondarySlots: 1, mineType: 'frag', mineMax: 2,
+    weapons: ['canon_auto', 'missile'], secondarySlots: 2, mineType: 'frag', mineMax: 2,
     prix: 350, unlockLevel: 1, power: 12, civil: false, canMine: false, canColonize: false,
     desc: 'Rapide et agressif, fragile.',
   },
@@ -73,7 +75,7 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     id: 'bombardier', nom: 'Bombardier', role: 'Anti-structure',
     hull: 120, shield: 55, energy: 110, speed: 55, accel: 95, turn: 3,
     radius: 6, sensor: 230, cargo: 15,
-    weapons: ['torpille'], secondarySlots: 1, mineType: 'emp', mineMax: 3,
+    weapons: ['torpille', 'missile'], secondarySlots: 2, mineType: 'emp', mineMax: 3,
     prix: 700, unlockLevel: 2, power: 18, civil: false, canMine: false, canColonize: false,
     desc: 'Ses torpilles rasent les bases.',
   },
@@ -81,7 +83,7 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     id: 'croiseur', nom: 'Croiseur', role: 'Ligne de front',
     hull: 260, shield: 140, energy: 160, speed: 46, accel: 70, turn: 2.2,
     radius: 9, sensor: 300, cargo: 30,
-    weapons: ['canon_lourd'], secondarySlots: 2, mineType: 'aimant', mineMax: 4,
+    weapons: ['canon_lourd', 'missile'], secondarySlots: 2, mineType: 'aimant', mineMax: 4,
     prix: 1200, unlockLevel: 2, power: 34, civil: false, canMine: false, canColonize: false,
     desc: 'Le poing de la flotte.',
   },
@@ -272,4 +274,11 @@ export const SALVAGE_RANGE = 18;
 export const DOCK_RANGE = 60;
 export const MINING_RANGE = 34;
 export const MINING_RATE = 6;              // unités/s
-export const DIFF_MULT = { facile: 0.6, normal: 1.0, difficile: 1.45 };
+export const DIFF_MULT = { facile: 0.5, normal: 1.0, difficile: 1.45 };
+// Réglages IA par difficulté : effectifs militaires, agressivité, délais de grâce
+export interface DiffTuning { warshipMult: number; aggroMult: number; harassMin: number; siegeMin: number; thinkMult: number; lateRamp: number }
+export const DIFF_TUNING: Record<'facile' | 'normal' | 'difficile', DiffTuning> = {
+  facile: { warshipMult: 0.55, aggroMult: 0.55, harassMin: 3.5, siegeMin: 10, thinkMult: 1.6, lateRamp: 0.04 },
+  normal: { warshipMult: 1.0, aggroMult: 1.0, harassMin: 1.5, siegeMin: 6, thinkMult: 1.0, lateRamp: 0.08 },
+  difficile: { warshipMult: 1.25, aggroMult: 1.2, harassMin: 1.0, siegeMin: 5, thinkMult: 0.8, lateRamp: 0.1 },
+};

@@ -21,7 +21,7 @@ export function makeShip(gs: GameState, team: number, cls: ShipClassId, pos: V2,
     mode: 'normal',
     stasisT: 0, empT: 0, cloakT: 0, smokeT: 0, invulnT: 0, jumpT: 0,
     lastDmgT: -999, aiCd: gs.rng() * 0.5, avoidSeed: gs.rng() * 100,
-    isFlagship: false, alive: true, supportT: 0,
+    isFlagship: false, alive: true, supportT: 0, lockT: 0, lockTargetId: -1,
     miningRes: null, colonizeT: 0, tradePhase: 0, kills: 0,
   };
   gs.ships.push(ship);
@@ -61,7 +61,7 @@ export function makeStructure(gs: GameState, team: number, stype: StructType, po
     pos: { ...pos }, radius: def.radius,
     hull: def.hull, hullMax: def.hull,
     shield: def.shield, shieldMax: def.shield,
-    level: 1, fireCd: 0, incomeT: 0, alive: true,
+    level: 1, fireCd: 0, incomeT: 0, lastDmgT: -999, alive: true,
   };
   gs.structures.push(st);
   return st;
@@ -71,7 +71,7 @@ export function makePlanet(gs: GameState, ptype: PlanetType, name: string, pos: 
   const p: Planet = {
     id: gs.nextId++, kind: 'planet', ptype, name,
     pos: { ...pos }, radius,
-    owner: -1, colonyHp: 0, colonyHpMax: 220, incomeT: 0, alive: true,
+    owner: -1, colonyHp: 0, colonyHpMax: 220, incomeT: 0, dyingT: 0, alive: true,
   };
   gs.planets.push(p);
   return p;
@@ -101,14 +101,17 @@ export function makeProjectile(gs: GameState, team: number, wid: Projectile['wid
   return p;
 }
 
-export function makeMineEnt(gs: GameState, team: number, mtype: MineType, pos: V2, fuse: number): MineEnt {
-  const m: MineEnt = { id: gs.nextId++, team, mtype, pos: { ...pos }, timer: fuse, armed: 0.6, alive: true };
+export function makeMineEnt(gs: GameState, team: number, mtype: MineType, pos: V2, fuse: number, vel: V2 = v2()): MineEnt {
+  const m: MineEnt = { id: gs.nextId++, team, mtype, pos: { ...pos }, vel: { ...vel }, timer: fuse, armed: 0.6, alive: true };
   gs.minesArmed.push(m);
   return m;
 }
 
 // ---------- Requêtes ----------
-export const isEnemy = (a: number, b: number) => a !== b && a >= 0 && b >= 0;
+// Vérification d'alliance : la sim l'actualise à chaque tick (setAllianceCheck).
+let alliedCheck: (a: number, b: number) => boolean = () => false;
+export function setAllianceCheck(f: (a: number, b: number) => boolean) { alliedCheck = f; }
+export const isEnemy = (a: number, b: number) => a !== b && a >= 0 && b >= 0 && !alliedCheck(a, b);
 
 export function shipsOfTeam(gs: GameState, team: number): Ship[] {
   return gs.ships.filter(s => s.alive && s.team === team);
@@ -166,16 +169,19 @@ export function signature(s: Ship): number {
 /** `viewer` (équipe) détecte-t-il le vaisseau `target` ? */
 export function canDetect(gs: GameState, viewerTeam: number, target: Ship): boolean {
   if (target.team === viewerTeam) return true;
+  if (alliedCheck(viewerTeam, target.team)) return true;
   const sig = signature(target);
   if (sig <= 0) return false;
+  // vision partagée : les capteurs des alliés comptent aussi
+  const sees = (team: number) => team === viewerTeam || alliedCheck(viewerTeam, team);
   for (const s of gs.ships) {
-    if (!s.alive || s.team !== viewerTeam) continue;
+    if (!s.alive || !sees(s.team) || s.team === target.team) continue;
     let range = SHIP_CLASSES[s.cls].sensor * sig;
     if (s.mode === 'radar') range *= 2;
     if (dist(s.pos, target.pos) < range) return true;
   }
   for (const st of gs.structures) {
-    if (!st.alive || st.team !== viewerTeam) continue;
+    if (!st.alive || !sees(st.team) || st.team === target.team) continue;
     if (dist(st.pos, target.pos) < STRUCTS[st.stype].sensor * sig) return true;
   }
   return false;

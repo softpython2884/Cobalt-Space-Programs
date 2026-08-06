@@ -1,7 +1,7 @@
 // ============ COBALT SECTOR — HUD, menus, panneaux (DOM) ============
 import {
   GameState, MatchConfig, StarType, PersonaId, StructType, GadgetId, V2, dist, len,
-  sectorName, territoryOwner, NO_TEAM, PIRATE_TEAM, structById, PlanetType,
+  sectorName, territoryOwner, NO_TEAM, PIRATE_TEAM, structById, PlanetType, areAllied,
 } from './core';
 import {
   TEAM_DEFS, PIRATE_DEF, NEUTRAL_CSS, STARS, STAR_LIST, PERSONAS, PERSONA_LIST,
@@ -39,6 +39,18 @@ export class HUD {
   private gs: GameState | null = null;
   private helpFrom: 'menu' | 'pause' = 'menu';
   private fleetListSig = '';
+  private diploSig = '';
+  private offersSig = '';
+  private curAlert = '';
+  private alertRevealT = 0;
+  private flashUntil = 0;
+  diploOpen = false;
+  onFleetMission: (kind: string) => void = () => {};
+  onDiploPropose: (team: number) => void = () => {};
+  onDiploBreak: (team: number) => void = () => {};
+  onDiploFocus: (team: number, target: number) => void = () => {};
+  onOfferAccept: (id: number) => void = () => {};
+  onOfferRefuse: (id: number) => void = () => {};
 
   constructor() {
     this.radarCtx = ($('radar') as HTMLCanvasElement).getContext('2d')!;
@@ -117,7 +129,8 @@ export class HUD {
       <h4>PILOTAGE (AZERTY natif)</h4>
       <span class="kbd">Z</span><span class="kbd">Q</span><span class="kbd">S</span><span class="kbd">D</span> déplacer le vaisseau ·
       <span class="kbd">Clic gauche</span>/<span class="kbd">Espace</span> arme principale ·
-      <span class="kbd">A</span>/<span class="kbd">E</span> armes secondaires ·
+      <span class="kbd">A</span> (maintenir) verrouillage missile — relâcher quand le réticule est vert ·
+      <span class="kbd">E</span> arme secondaire ·
       <span class="kbd">Clic molette</span> larguer une mine ·
       <span class="kbd">F</span> miner (maintenir près d'un astéroïde/nuage) ·
       <span class="kbd">C</span> prendre le contrôle du vaisseau allié le plus proche
@@ -126,7 +139,8 @@ export class HUD {
       <span class="kbd">(</span><span class="kbd">-</span><span class="kbd">è</span>… gadgets débloqués à la station
       <h4>STRATÉGIE</h4>
       <span class="kbd">Molette</span> zoomer/dézoomer — dézoomez à fond pour la <b>vue tactique</b> ·
-      <span class="kbd">Clic gauche</span> sélectionner (glisser = rectangle, Ctrl = ajouter) ·
+      <span class="kbd">Double-clic</span> sélectionner (double-clic + glisser = rectangle, Ctrl = ajouter) ·
+      <span class="kbd">J</span> diplomatie (alliances, cibles communes) ·
       <span class="kbd">Clic droit</span> menu d'ordres (attaquer, miner, escorter, coloniser…) ·
       En vue tactique : <span class="kbd">ZQSD</span> déplace la carte, panneau à droite pour créer des <b>flottes</b> et choisir les <b>formations</b>
       <h4>ÉCONOMIE</h4>
@@ -158,6 +172,10 @@ export class HUD {
     $('pause').classList.add('hidden');
     this.closePanels();
     this.fleetListSig = '';
+    this.diploSig = '';
+    this.offersSig = '';
+    this.curAlert = '';
+    $('diplo-offers').innerHTML = '';
     this.buildBadges();
   }
 
@@ -169,11 +187,11 @@ export class HUD {
     box.innerHTML = '';
     box.style.pointerEvents = 'auto';
     MODES.forEach((m, i) => {
-      box.appendChild(this.makeBadge(AZERTY_DIGITS[i], m.icon, m.nom, () => this.onBadge('mode', m.id), `badge-mode-${m.id}`, m.desc));
+      box.appendChild(this.makeBadge(String(i + 1), m.icon, m.nom, () => this.onBadge('mode', m.id), `badge-mode-${m.id}`, m.desc));
     });
     GADGET_ORDER.forEach((gid, i) => {
       const g = GADGETS[gid];
-      box.appendChild(this.makeBadge(AZERTY_DIGITS[4 + i] ?? '', g.icon, g.nom, () => this.onBadge('gadget', gid), `badge-gadget-${gid}`, g.desc));
+      box.appendChild(this.makeBadge(String(5 + i), g.icon, g.nom, () => this.onBadge('gadget', gid), `badge-gadget-${gid}`, g.desc));
     });
   }
 
@@ -270,10 +288,32 @@ export class HUD {
     this.updateBadges(gs);
     this.updateLog(gs);
     const alert = $('alert');
-    if (gs.alertT > 0 && gs.alertText) { alert.textContent = gs.alertText; alert.classList.remove('hidden'); }
-    else alert.classList.add('hidden');
+    if (gs.alertT > 0 && gs.alertText) {
+      // séquence radio : allumage, souffle statique, puis le texte s'affiche
+      if (this.curAlert !== gs.alertText) {
+        this.curAlert = gs.alertText;
+        this.alertRevealT = performance.now() + 560;
+        sfx.radioOn();
+        window.setTimeout(() => sfx.radioStatic(), 180);
+      }
+      alert.classList.remove('hidden');
+      const now = performance.now();
+      if (now < this.alertRevealT) {
+        alert.textContent = '▚▞ TRANSMISSION ▚▞';
+        alert.classList.add('radio-noise');
+      } else {
+        alert.classList.remove('radio-noise');
+        const shown = Math.min(this.curAlert.length, Math.floor((now - this.alertRevealT) / 20) + 1);
+        alert.textContent = this.curAlert.slice(0, shown);
+      }
+    } else {
+      alert.classList.add('hidden');
+      this.curAlert = '';
+    }
 
-    $('hint-bar').textContent = opts.hint;
+    if (Date.now() > this.flashUntil) $('hint-bar').textContent = opts.hint;
+    this.updateOffers(gs);
+    if (this.diploOpen) this.refreshDiplo(gs);
 
     // vignette espion
     $('spyvignette').classList.toggle('hidden', !(ship && ship.mode === 'espion'));
@@ -472,10 +512,110 @@ export class HUD {
   }
 
   closePanels() {
-    this.buildOpen = false; this.shopOpen = false;
+    this.buildOpen = false; this.shopOpen = false; this.diploOpen = false;
     $('panel-build').classList.add('hidden');
     $('panel-shop').classList.add('hidden');
+    $('panel-diplo').classList.add('hidden');
     this.closeCtxMenu();
+  }
+
+  toggleDiplo(gs: GameState) {
+    this.diploOpen = !this.diploOpen;
+    if (this.diploOpen) {
+      this.buildOpen = false; this.shopOpen = false;
+      $('panel-build').classList.add('hidden');
+      $('panel-shop').classList.add('hidden');
+      this.diploSig = '';
+      this.refreshDiplo(gs);
+    }
+    $('panel-diplo').classList.toggle('hidden', !this.diploOpen);
+  }
+
+  private refreshDiplo(gs: GameState) {
+    const others = gs.activeTeams.filter(id => id !== gs.playerTeam);
+    const sig = others.map(id => {
+      const t = gs.teams[id];
+      return `${id}:${t.alive ? 1 : 0}:${areAllied(gs, gs.playerTeam, id) ? 1 : 0}:${Math.floor(teamScore(gs, id) / 50)}`;
+    }).join('|') + `|${Math.floor(gs.teams[gs.playerTeam].credits / 100)}`;
+    if (sig === this.diploSig) return;
+    this.diploSig = sig;
+    const box = $('diplo-list');
+    box.innerHTML = '';
+    for (const id of others) {
+      const t = gs.teams[id];
+      const allied = areAllied(gs, gs.playerTeam, id);
+      const row = document.createElement('div');
+      row.className = 'diplo-row';
+      const head = document.createElement('div');
+      head.className = 'd-head';
+      head.innerHTML = `<span class="ts-dot" style="background:${t.cssColor}"></span>` +
+        `<b>${t.name}</b> <span class="s-desc">${PERSONAS[t.persona].nom} · score ${teamScore(gs, id)}</span>` +
+        `<span class="d-status${allied ? ' allied' : ''}">${t.alive ? (allied ? '🤝 Allié' : 'Neutre') : '☠ Éliminée'}</span>`;
+      row.appendChild(head);
+      if (t.alive) {
+        const btns = document.createElement('div');
+        btns.className = 'd-btns';
+        if (!allied) {
+          const b = document.createElement('button');
+          b.className = 'tb-btn';
+          b.textContent = '🤝 Proposer une alliance';
+          b.onclick = () => { this.onDiploPropose(id); this.diploSig = ''; };
+          btns.appendChild(b);
+        } else {
+          const br = document.createElement('button');
+          br.className = 'tb-btn';
+          br.textContent = '💔 Rompre';
+          br.onclick = () => { this.onDiploBreak(id); this.diploSig = ''; };
+          btns.appendChild(br);
+          // demander de cibler chaque ennemi restant
+          for (const foe of gs.activeTeams) {
+            if (foe === id || foe === gs.playerTeam || !gs.teams[foe].alive) continue;
+            if (areAllied(gs, gs.playerTeam, foe)) continue;
+            const bf = document.createElement('button');
+            bf.className = 'tb-btn';
+            bf.textContent = `⚔ Cibler ${gs.teams[foe].name}`;
+            bf.onclick = () => { this.onDiploFocus(id, foe); this.diploSig = ''; };
+            btns.appendChild(bf);
+          }
+        }
+        row.appendChild(btns);
+      }
+      box.appendChild(row);
+    }
+  }
+
+  private updateOffers(gs: GameState) {
+    const mine = gs.diploOffers.filter(o => o.to === gs.playerTeam);
+    const sig = mine.map(o => `${o.id}:${Math.ceil(o.expiresT - gs.t)}`).join('|');
+    if (sig === this.offersSig) return;
+    this.offersSig = sig;
+    const box = $('diplo-offers');
+    box.innerHTML = '';
+    for (const o of mine) {
+      const from = gs.teams[o.from];
+      const div = document.createElement('div');
+      div.className = 'offer-box';
+      const txt = o.type === 'alliance'
+        ? `<b style="color:${from.cssColor}">${from.name}</b> vous propose une <b>alliance</b>.`
+        : `<b style="color:${from.cssColor}">${from.name}</b> vous demande de cibler <b>${gs.teams[o.target ?? 0]?.name}</b>.`;
+      div.innerHTML = `<div class="o-title">📡 TRANSMISSION ENTRANTE</div>${txt}`;
+      const btns = document.createElement('div');
+      btns.className = 'o-btns';
+      const ok = document.createElement('button');
+      ok.className = 'tb-btn';
+      ok.textContent = '✔ Accepter';
+      ok.onclick = () => { this.onOfferAccept(o.id); this.offersSig = ''; };
+      const no = document.createElement('button');
+      no.className = 'tb-btn';
+      no.textContent = '✖ Refuser';
+      no.onclick = () => { this.onOfferRefuse(o.id); this.offersSig = ''; };
+      const timer = document.createElement('span');
+      timer.className = 'o-timer';
+      timer.textContent = `${Math.max(0, Math.ceil(o.expiresT - gs.t))} s`;
+      btns.appendChild(ok); btns.appendChild(no); btns.appendChild(timer);
+      div.appendChild(btns);
+      box.appendChild(div);
+    }
   }
 
   private wireStatic() {
@@ -503,6 +643,9 @@ export class HUD {
     $('btn-fleet-disband').onclick = () => this.onFleetDisband();
     document.querySelectorAll('#tb-formations .frm').forEach(el => {
       (el as HTMLElement).onclick = () => this.onFormation((el as HTMLElement).dataset.frm!);
+    });
+    document.querySelectorAll('#tb-missions .msn').forEach(el => {
+      (el as HTMLElement).onclick = () => this.onFleetMission((el as HTMLElement).dataset.msn!);
     });
   }
 
@@ -607,11 +750,18 @@ export class HUD {
     }
   }
 
-  private hintFlashT: number | null = null;
   flashHint(text: string) {
     $('hint-bar').textContent = text;
-    if (this.hintFlashT) clearTimeout(this.hintFlashT);
-    this.hintFlashT = window.setTimeout(() => { $('hint-bar').textContent = ''; }, 2500);
+    this.flashUntil = Date.now() + 2500;
+  }
+
+  /** Flash plein écran (supernova, explosion planétaire). */
+  flashScreen() {
+    const el = $('flash');
+    el.classList.remove('hidden');
+    el.classList.add('on');
+    window.setTimeout(() => el.classList.remove('on'), 80);
+    window.setTimeout(() => el.classList.add('hidden'), 2600);
   }
 
   // ================================================================

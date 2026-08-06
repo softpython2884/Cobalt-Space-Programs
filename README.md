@@ -23,8 +23,9 @@ Puis ouvrir http://localhost:5173
 |---|---|
 | `Z Q S D` | Déplacer le vaisseau (vue action) / la carte (vue tactique) |
 | Clic gauche / `Espace` | Arme principale (visée au curseur, arc + flèche) |
-| `A` / `E` | Armes secondaires 1 / 2 |
-| Clic molette | Larguer une mine (frag / EMP / aimant selon le vaisseau) |
+| `A` (maintenir) | Verrouillage missile — relâcher quand le réticule passe au vert |
+| `E` | Arme secondaire |
+| Clic molette | Lancer une mine vers le curseur (frag / EMP / aimant selon le vaisseau) |
 | `F` (maintenir) | Miner l'astéroïde ou le nuage de gaz proche |
 | `C` | Prendre le contrôle du vaisseau allié le plus proche |
 | `& é " '` | Modes : croisière, radar, espion, saut spatial |
@@ -32,7 +33,8 @@ Puis ouvrir http://localhost:5173
 | `B` | Menu construction (avant-poste, mine spatiale, satellite) |
 | `U` | Boutique de la station (amarré) : vaisseaux, armes, améliorations, niveaux de station |
 | Molette | Zoom — dézoomer à fond ouvre la **vue tactique** |
-| Clic gauche (glisser) | Sélection (Ctrl = ajouter) |
+| Double-clic (+ glisser) | Sélection (Ctrl = ajouter ; clic simple suffit en vue tactique) |
+| `J` | Diplomatie : alliances, cibles communes (les IA font aussi des offres) |
 | Clic droit | Menu d'ordres : attaquer, miner, escorter, coloniser, commercer… |
 | `Échap` | Fermer les panneaux / pause |
 
@@ -42,7 +44,9 @@ Puis ouvrir http://localhost:5173
   (transporteur requis) pour un revenu périodique, construisez des mines spatiales près des
   astéroïdes, faites du commerce avec des cargos. Les épaves rapportent des crédits.
 - **Militaire** : recrutez chasseurs, bombardiers, croiseurs ; créez des **flottes** en vue
-  tactique (chef + membres + mission : attaque, escorte, minage, commerce) avec 4 formations.
+  tactique (chef + membres + mission : attaque, escorte, minage auto, patrouilles int./bordure/ext.)
+  avec 4 formations — les vaisseaux armés d'une flotte de minage escortent les mineurs.
+- **Diplomatie** : alliances (vision partagée, commerce, cibles communes) — les IA proposent aussi.
 - **Station** : 3 niveaux — débloque de nouvelles classes de vaisseaux et des gadgets.
 - **Victoire** : détruisez les stations ennemies. Mort subite à 20 min, fin au score à 28 min.
 - **Systèmes stellaires** : soleils jaune/rouge/bleu/violet (rare, +50 % d'énergie), naine

@@ -2,7 +2,7 @@
 // On utilise event.code (position physique) : ZQSD en AZERTY = WASD en QWERTY,
 // donc le jeu marche nativement sur les deux dispositions.
 
-export interface ClickEvent { button: number; x: number; y: number; ctrl: boolean; shift: boolean }
+export interface ClickEvent { button: number; x: number; y: number; ctrl: boolean; shift: boolean; dbl: boolean }
 
 export class Input {
   keys = new Set<string>();
@@ -16,7 +16,12 @@ export class Input {
   // glisser (sélection rectangle)
   dragStart: { x: number; y: number } | null = null;
   dragEnd: { x: number; y: number } | null = null;
-  dragDone: { x0: number; y0: number; x1: number; y1: number; ctrl: boolean } | null = null;
+  dragDone: { x0: number; y0: number; x1: number; y1: number; ctrl: boolean; fromDouble: boolean } | null = null;
+  /** Le bouton gauche actuellement maintenu provient d'un double-clic (mode sélection). */
+  dblHold = false;
+  private lastDownT = 0;
+  private lastDownX = 0;
+  private lastDownY = 0;
 
   constructor(private el: HTMLElement) {
     window.addEventListener('keydown', e => {
@@ -42,6 +47,12 @@ export class Input {
       if (onUI(e)) return;
       if (e.button === 0) {
         this.leftDown = true;
+        // double-clic (2 pressions rapides et proches) : passe en mode sélection
+        const now = performance.now();
+        this.dblHold = (now - this.lastDownT < 380)
+          && Math.hypot(e.clientX - this.lastDownX, e.clientY - this.lastDownY) < 36;
+        this.lastDownT = now;
+        this.lastDownX = e.clientX; this.lastDownY = e.clientY;
         this.dragStart = { x: e.clientX, y: e.clientY };
         this.dragEnd = null;
       }
@@ -50,7 +61,7 @@ export class Input {
     });
     // mouseup sur window : relâcher hors de la fenêtre ne doit pas bloquer leftDown/drag
     window.addEventListener('mouseup', e => {
-      const ev: ClickEvent = { button: e.button, x: e.clientX, y: e.clientY, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey };
+      const ev: ClickEvent = { button: e.button, x: e.clientX, y: e.clientY, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, dbl: this.dblHold };
       const ui = onUI(e);
       if (e.button === 0) {
         this.leftDown = false;
@@ -60,13 +71,14 @@ export class Input {
             this.dragDone = {
               x0: Math.min(this.dragStart.x, e.clientX), y0: Math.min(this.dragStart.y, e.clientY),
               x1: Math.max(this.dragStart.x, e.clientX), y1: Math.max(this.dragStart.y, e.clientY),
-              ctrl: ev.ctrl,
+              ctrl: ev.ctrl, fromDouble: this.dblHold,
             };
           } else if (!ui) {
             this.clicks.push(ev);
           }
         }
         this.dragStart = null; this.dragEnd = null;
+        this.dblHold = false;
       }
       if (e.button === 1) { this.middleDown = false; if (!ui) this.middleClicks.push(ev); }
       if (e.button === 2) { this.rightDown = false; if (!ui) this.rightClicks.push(ev); }

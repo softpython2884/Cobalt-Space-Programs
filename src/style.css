@@ -77,8 +77,9 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; background: var(
 .badge .b-icon { font-size: 20px; line-height: 1; }
 .badge .b-name { font-size: 8px; color: var(--txt-dim); margin-top: 3px; letter-spacing: 0.5px; }
 .badge .b-key {
-  position: absolute; top: 2px; left: 4px; font-size: 9px; color: var(--accent);
-  font-family: Consolas; opacity: 0.9;
+  position: absolute; top: 2px; left: 3px; font-size: 13px; font-weight: 700; color: #fff;
+  font-family: Consolas; background: rgba(64,196,255,0.3); border-radius: 3px;
+  padding: 0 5px; line-height: 16px;
 }
 .badge.active { border-color: var(--accent); box-shadow: 0 0 10px rgba(64,196,255,0.5) inset; }
 .badge.oncd { opacity: 0.85; }
@@ -108,7 +109,7 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; background: var(
 
 /* ---------- Vue tactique ---------- */
 #tacticalbar {
-  position: absolute; top: 70px; right: 10px; z-index: 12; width: 240px;
+  position: absolute; top: 185px; right: 10px; z-index: 12; width: 240px;
   background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px;
   padding: 10px; color: var(--txt); font-size: 12px;
 }
@@ -234,3 +235,39 @@ h2 { letter-spacing: 4px; margin-bottom: 18px; }
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: #1d3350; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ---------- Diplomatie ---------- */
+.diplo-row {
+  background: #0c1626; border: 1px solid var(--panel-border); border-radius: 5px;
+  padding: 8px 10px; margin-bottom: 7px; font-size: 12px;
+}
+.diplo-row .d-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.diplo-row .d-status { margin-left: auto; font-size: 10px; color: var(--txt-dim); }
+.diplo-row .d-status.allied { color: #6dff8a; }
+.diplo-row .d-btns { display: flex; gap: 5px; flex-wrap: wrap; }
+
+#diplo-offers {
+  position: absolute; right: 12px; bottom: 110px; z-index: 25;
+  display: flex; flex-direction: column; gap: 8px; width: 270px;
+}
+.offer-box {
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 8px;
+  padding: 10px 12px; color: var(--txt); font-size: 12px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6); animation: offerIn 0.3s ease-out;
+}
+@keyframes offerIn { from { transform: translateX(40px); opacity: 0; } }
+.offer-box .o-title { font-size: 10px; letter-spacing: 2px; color: var(--accent); margin-bottom: 4px; }
+.offer-box .o-btns { display: flex; gap: 6px; margin-top: 8px; }
+.offer-box .o-timer { color: var(--txt-dim); font-size: 10px; margin-left: auto; align-self: center; }
+
+/* ---------- Flash plein écran ---------- */
+#flash {
+  position: absolute; inset: 0; z-index: 90; pointer-events: none;
+  background: radial-gradient(circle, #fff8e8 0%, #ffb35d 60%, rgba(255,80,40,0.6) 100%);
+  opacity: 0; transition: opacity 2.2s ease-out;
+}
+#flash.on { opacity: 0.95; transition: opacity 0.05s; }
+
+/* ---------- Alerte radio ---------- */
+#alert.radio-noise { color: #9fdcff; text-shadow: 0 0 14px rgba(122,223,255,0.8); letter-spacing: 6px; }

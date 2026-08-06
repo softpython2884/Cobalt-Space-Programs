@@ -3,6 +3,7 @@ import {
   GameState, Ship, Structure, Planet, V2, v2, add, sub, scale, len, dist, norm, angleOf,
   fromAngle, clamp, turnToward, IDLE, PIRATE_TEAM, NO_TEAM, WORLD_R, addLog, setAlert,
   shipById, structById, planetById, GadgetId, MineType, WeaponId, ShipClassId, StructType, Res,
+  areAllied, allyKey,
 } from './core';
 import {
   WEAPONS, SHIP_CLASSES, STRUCTS, MINES, GADGETS, RES_PRICE, KILL_BOUNTY, WRECK_VALUE,
@@ -15,8 +16,10 @@ import {
 import {
   makeShip, makeStructure, makeWreck, makeProjectile, makeMineEnt, applyUpgrades, speedMult,
   isEnemy, nearestShip, nearestStruct, nearestRoid, nearestCloud, canDetect, cargoTotal, addCargo,
+  setAllianceCheck,
 } from './entities';
 import { removeFromFleet, formationWorldPos, fleetShips } from './orders';
+import { PERSONAS } from './data';
 import { thinkTeams, thinkPirates, spawnPirateRaid } from './ai';
 
 const DRAG = 1.1;
@@ -36,7 +39,19 @@ export function simTick(gs: GameState, dt: number) {
     addLog(gs, 'Mort subite : les stations ne rechargent plus leurs boucliers.', '#ff8c42');
   }
 
+  setAllianceCheck((x, y) => areAllied(gs, x, y));
+  // offres diplomatiques : expiration
+  gs.diploOffers = gs.diploOffers.filter(o => {
+    if (!gs.teams[o.from]?.alive || !gs.teams[o.to]?.alive) return false;
+    if (o.expiresT <= gs.t) {
+      if (o.to === gs.playerTeam) addLog(gs, `L'offre de ${gs.teams[o.from].name} a expiré.`, '#8fa8c8');
+      return false;
+    }
+    return true;
+  });
+
   updateStarBodies(gs, dt);
+  updateFleetMissions(gs, dt);
   thinkTeams(gs, dt);
   thinkPirates(gs, dt);
 
@@ -83,10 +98,49 @@ function updateStarHazards(gs: GameState, dt: number) {
     }
     if (map.blackHole) {
       const d = len(s.pos);
-      const g = 2600000 / (d * d + 4000);
+      const g = (2600000 / (d * d + 4000)) * (1 + gs.t / 1400);
       const dir = norm(scale(s.pos, -1));
-      s.vel = add(s.vel, scale(dir, clamp(g, 0, 55) * dt));
+      s.vel = add(s.vel, scale(dir, clamp(g, 0, 70) * dt));
     }
+  }
+
+  // Le trou noir dévore peu à peu les corps célestes : en fin de partie, tout y passe
+  if (map.blackHole) {
+    const pull = 0.5 + gs.t * 0.0015;
+    const spiral = (pos: V2): V2 => {
+      const dir = norm(scale(pos, -1));
+      const tang = { x: -dir.y, y: dir.x };
+      return add(pos, scale(add(dir, scale(tang, 0.45)), pull * dt));
+    };
+    for (const p of gs.planets) {
+      if (!p.alive) continue;
+      p.pos = spiral(p.pos);
+      if (len(p.pos) < map.killRadius + p.radius * 0.3) {
+        p.alive = false;
+        gs.fx.push({ type: 'explosion', pos: { ...p.pos }, size: p.radius * 2.5, color: 0xff8c42 });
+        addLog(gs, `${p.name} a été engloutie par le trou noir !`, '#ff8c42');
+        if (p.owner === gs.playerTeam) setAlert(gs, `${p.name.toUpperCase()} ENGLOUTIE`, 3);
+      }
+    }
+    for (const r of gs.roids) {
+      if (!r.alive) continue;
+      r.pos = spiral(r.pos);
+      if (len(r.pos) < map.killRadius) { r.alive = false; gs.fx.push({ type: 'impact', pos: { ...r.pos }, color: 0xff8c42, size: 6 }); }
+    }
+    for (const c of gs.clouds) {
+      if (!c.alive) continue;
+      c.pos = spiral(c.pos);
+      if (len(c.pos) < map.killRadius) c.alive = false;
+    }
+  }
+
+  // Grondements avant la supernova
+  if (map.supernovaAt > 0 && gs.supernovaWave < 0) {
+    const left = map.supernovaAt - gs.t;
+    if (left < 20 && Math.floor((gs.t + dt) / 3) !== Math.floor(gs.t / 3)) {
+      gs.fx.push({ type: 'onde', pos: v2(), size: 180 + (20 - left) * 14, color: 0xff6b4b });
+    }
+    if (left <= 10 && left + dt > 10) setAlert(gs, '☀ EFFONDREMENT DU CŒUR STELLAIRE', 4);
   }
 
   // Impulsion de l'étoile à neutrons
@@ -351,9 +405,25 @@ function combatApproach(gs: GameState, s: Ship, targetPos: V2, target: Ship | St
     }
   }
 
-  // tir
+  // tir (un verrouillage missile en cours bloque les autres armes)
+  const locking = s.lockT > 0 && s.id !== gs.playerShipId;
   for (let i = 0; i < s.weapons.length; i++) {
-    const w = WEAPONS[s.weapons[i].wid];
+    const ws = s.weapons[i];
+    const w = WEAPONS[ws.wid];
+    if (ws.wid === 'missile') {
+      if (s.id === gs.playerShipId) continue;      // le joueur verrouille lui-même (touche A)
+      if (target.kind === 'planet') continue;
+      const tid = (target as Ship | Structure).id;
+      if (ws.cd > 0 || s.energy < w.energy || d > w.range) {
+        if (s.lockTargetId === tid) lockCancel(s);
+        continue;
+      }
+      if (s.lockTargetId !== tid) { s.lockTargetId = tid; s.lockT = 0; }
+      s.lockT += dt;
+      if (s.lockT >= (w.lockTime ?? 1.2)) { fireMissile(gs, s, i, tid); lockCancel(s); }
+      continue;
+    }
+    if (locking) continue;
     if (d < w.range * 1.05) {
       const targetId = target.kind === 'planet' ? undefined : (target as Ship | Structure).id;
       fireShipWeapon(gs, s, i, targetPos, targetId, target.kind === 'planet' ? target.id : undefined);
@@ -450,9 +520,10 @@ export function harvest(gs: GameState, s: Ship, target: { kind: string; rtype?: 
 function tradeBehavior(gs: GameState, s: Ship, dt: number) {
   const team = gs.teams[s.team];
   if (!team) { s.order = { ...IDLE }; return; }
+  const tradable = (p: Planet) => p.owner === s.team || (p.owner >= 0 && areAllied(gs, p.owner, s.team));
   let planet = planetById(gs, s.order.targetId ?? -1);
-  if (!planet || planet.owner !== s.team) {
-    planet = gs.planets.find(p => p.alive && p.owner === s.team) ?? undefined as any;
+  if (!planet || !tradable(planet)) {
+    planet = gs.planets.find(p => p.alive && tradable(p)) ?? undefined as any;
     if (!planet) { s.order = { ...IDLE }; return; }
     s.order.targetId = planet.id;
   }
@@ -488,7 +559,15 @@ function colonizeBehavior(gs: GameState, s: Ship, dt: number) {
       planet.colonyHp = planet.colonyHpMax;
       addLog(gs, `${team.name} colonise ${planet.name} !`, team.cssColor);
       if (s.team === gs.playerTeam) setAlert(gs, `${planet.name} COLONISÉE`, 2.5);
-      s.order = { ...IDLE };
+      // le transporteur se pose définitivement : il est consommé par la colonie
+      gs.fx.push({ type: 'saut', pos: { ...s.pos } });
+      s.alive = false;
+      removeFromFleet(gs, s);
+      if (s.id === gs.playerShipId) {
+        gs.playerShipId = -1;
+        team.respawnT = 2;
+        addLog(gs, `Votre transporteur s'est posé — nouveau vaisseau à la station.`, '#40c4ff');
+      }
     } else {
       if (s.team === gs.playerTeam) addLog(gs, `Crédits insuffisants pour coloniser (${COLONIZE_COST}).`, '#ff8c42');
       s.order = { ...IDLE };
@@ -702,6 +781,7 @@ export function applyDamage(gs: GameState, target: Ship | Structure, dmg: number
     if (target.smokeT > 0 && !environmental) dmg *= 0.55;
     target.lastDmgT = gs.t;
   }
+  if (target.kind === 'structure') target.lastDmgT = gs.t;
   // bouclier d'abord
   const absorbed = Math.min(target.shield, dmg);
   target.shield -= absorbed;
@@ -810,8 +890,10 @@ function updateStructures(gs: GameState, dt: number) {
     const def = STRUCTS[st.stype];
     st.fireCd = Math.max(0, st.fireCd - dt);
 
-    // bouclier des structures (coupé en mort subite)
-    if (st.shield < st.shieldMax && gs.t < SUDDEN_DEATH_T) st.shield = clamp(st.shield + 4 * dt, 0, st.shieldMax);
+    // bouclier des structures : régénère après 10 s sans dégât (coupé en mort subite)
+    if (st.shield < st.shieldMax && gs.t < SUDDEN_DEATH_T && gs.t - st.lastDmgT > 10) {
+      st.shield = clamp(st.shield + 7 * dt, 0, st.shieldMax);
+    }
 
     // tourelle
     if (def.weaponDmg > 0 && st.fireCd <= 0) {
@@ -843,7 +925,17 @@ function updateStructures(gs: GameState, dt: number) {
 
 function updatePlanets(gs: GameState, dt: number) {
   for (const p of gs.planets) {
-    if (!p.alive || p.owner < 0) continue;
+    if (!p.alive) continue;
+    // planète frappée : le noyau s'effondre puis elle explose
+    if (p.dyingT > 0) {
+      p.dyingT -= dt;
+      if (gs.rng() < dt * 10) {
+        gs.fx.push({ type: 'impact', pos: add(p.pos, fromAngle(gs.rng() * Math.PI * 2, p.radius * gs.rng())), color: 0xff5d2a, size: 9 });
+      }
+      if (p.dyingT <= 0) explodePlanet(gs, p);
+      continue;
+    }
+    if (p.owner < 0) continue;
     const team = gs.teams[p.owner];
     if (!team || !team.alive) { p.owner = NO_TEAM; continue; }
     // la colonie se répare lentement
@@ -858,20 +950,48 @@ function updatePlanets(gs: GameState, dt: number) {
   }
 }
 
+/** Explosion d'une planète frappée : dégâts + vaisseaux projetés dans un large rayon. */
+function explodePlanet(gs: GameState, p: Planet) {
+  p.alive = false;
+  const R = p.radius * 7;
+  gs.fx.push({ type: 'explosion', pos: { ...p.pos }, size: p.radius * 3, color: 0xff6b4b });
+  gs.fx.push({ type: 'onde', pos: { ...p.pos }, size: R, color: 0xff8c42 });
+  gs.fx.push({ type: 'frappe', pos: { ...p.pos }, size: p.radius });
+  for (const s of gs.ships) {
+    if (!s.alive) continue;
+    const d = dist(s.pos, p.pos);
+    if (d < R) {
+      const f = 1 - d / R;
+      s.vel = add(s.vel, scale(norm(sub(s.pos, p.pos)), 240 * f));
+      applyDamage(gs, s, 55 * f, NO_TEAM, true);
+    }
+  }
+  addLog(gs, `☄ ${p.name} A EXPLOSÉ !`, '#ff6b4b');
+  setAlert(gs, `${p.name.toUpperCase()} DÉTRUITE`, 3);
+}
+
 // ================================================================
 //  MINES LARGUÉES
 // ================================================================
-export function dropMine(gs: GameState, s: Ship): boolean {
+export function dropMine(gs: GameState, s: Ship, aim?: V2): boolean {
   if (!s.mineType || s.mineCount <= 0) return false;
   s.mineCount--;
   const def = MINES[s.mineType];
-  makeMineEnt(gs, s.team, s.mineType, add(s.pos, fromAngle(s.heading + Math.PI, s.radius + 4)), def.fuse);
+  // la mine est lancée avec de l'élan vers le curseur
+  const dir = aim ? norm(sub(aim, s.pos)) : fromAngle(s.heading + Math.PI);
+  const throwDist = aim ? Math.min(dist(aim, s.pos), 170) : 25;
+  const speed = clamp(throwDist * 1.5, 35, 190);
+  const start = add(s.pos, scale(dir, s.radius + 4));
+  makeMineEnt(gs, s.team, s.mineType, start, def.fuse, add(scale(dir, speed), scale(s.vel, 0.4)));
   return true;
 }
 
 function updateMines(gs: GameState, dt: number) {
   for (const m of gs.minesArmed) {
     if (!m.alive) continue;
+    // élan du lancer, avec frottement
+    m.pos = add(m.pos, scale(m.vel, dt));
+    m.vel = scale(m.vel, Math.max(0, 1 - 2.4 * dt));
     m.armed = Math.max(0, m.armed - dt);
     m.timer -= dt;
     let boom = m.timer <= 0;
@@ -1012,6 +1132,13 @@ function checkVictory(gs: GameState) {
     gs.status = 'over';
     gs.winner = alive[0];
     gs.overReason = alive[0] === gs.playerTeam ? 'Toutes les stations ennemies sont tombées.' : '';
+    return;
+  }
+  // tous les survivants sont alliés : victoire partagée
+  if (alive.length >= 2 && alive.every(x => alive.every(y => areAllied(gs, x, y)))) {
+    gs.status = 'over';
+    gs.winner = alive.includes(gs.playerTeam) ? gs.playerTeam : alive[0];
+    gs.overReason = `Victoire d'alliance : les survivants sont tous alliés.`;
     return;
   }
   // limite de temps : victoire au score
@@ -1209,6 +1336,15 @@ export function activateGadget(gs: GameState, teamId: number, gid: GadgetId, tar
       gs.fx.push({ type: 'bulle', pos: { ...s.pos }, size: s.radius + 10 });
       break;
     case 'frappe': {
+      const planet = planetById(gs, targetId ?? -1);
+      if (planet) {
+        if (dist(s.pos, planet.pos) > 480) return 'Cible trop éloignée';
+        if (planet.dyingT > 0) return 'La planète se disloque déjà';
+        planet.dyingT = 4;
+        gs.fx.push({ type: 'frappe', pos: { ...planet.pos }, size: planet.radius });
+        addLog(gs, `Frappe orbitale : le noyau de ${planet.name} s'effondre !`, '#ff6b4b');
+        break;
+      }
       const target = shipById(gs, targetId ?? -1) ?? structById(gs, targetId ?? -1);
       if (!target || !isEnemy(teamId, target.team)) return 'Aucune cible ennemie visée';
       if (dist(s.pos, target.pos) > 420) return 'Cible trop éloignée';
@@ -1264,4 +1400,256 @@ export function takeControlNearest(gs: GameState): string | null {
   gs.playerShipId = other.id;
   addLog(gs, `Contrôle transféré : ${SHIP_CLASSES[other.cls].nom}.`, '#40c4ff');
   return null;
+}
+
+// ================================================================
+//  MISSIONS DE FLOTTE AUTONOMES (minage auto, patrouilles)
+// ================================================================
+function updateFleetMissions(gs: GameState, dt: number) {
+  for (const f of gs.fleets) {
+    const kind = f.mission.kind;
+    if (kind !== 'mine_auto' && kind !== 'patrol_in' && kind !== 'patrol_border' && kind !== 'patrol_out') continue;
+    const ships = fleetShips(gs, f);
+    if (ships.length === 0) continue;
+    const team = gs.teams[f.team];
+    const station = structById(gs, team?.stationId ?? -1);
+    const home = station ? station.pos : v2();
+
+    if (kind === 'mine_auto') {
+      const miners = ships.filter(x => SHIP_CLASSES[x.cls].canMine);
+      const guards = ships.filter(x => !SHIP_CLASSES[x.cls].canMine);
+      for (const m of miners) {
+        const valid = m.order.kind === 'mine' && (
+          cargoTotal(m) >= m.cargoMax - 0.5 ||
+          gs.roids.some(r => r.id === m.order.targetId && r.alive && r.amount > 0) ||
+          gs.clouds.some(c => c.id === m.order.targetId && c.alive && c.amount > 0));
+        if (!valid) {
+          // priorité : la ressource la plus proche du territoire (de la station)
+          let bestId = -1, bd = Infinity;
+          for (const r of gs.roids) {
+            if (!r.alive || r.amount <= 0) continue;
+            const d = dist(r.pos, home);
+            if (d < bd) { bd = d; bestId = r.id; }
+          }
+          for (const c of gs.clouds) {
+            if (!c.alive || c.amount <= 0) continue;
+            const d = dist(c.pos, home) + 60;
+            if (d < bd) { bd = d; bestId = c.id; }
+          }
+          m.order = bestId >= 0 ? { kind: 'mine', targetId: bestId } : { kind: 'guard', pos: { ...home } };
+        }
+      }
+      // les vaisseaux armés de la flotte escortent automatiquement les mineurs
+      guards.forEach((g, i) => {
+        if (g.order.kind === 'attack') return; // laisse-le finir son combat
+        if (miners.length === 0) {
+          if (g.order.kind === 'idle') g.order = { kind: 'guard', pos: { ...home } };
+          return;
+        }
+        const ward = miners[i % miners.length];
+        if (g.order.kind !== 'escort' || g.order.targetId !== ward.id) {
+          g.order = { kind: 'escort', targetId: ward.id };
+        }
+      });
+      continue;
+    }
+
+    // Patrouilles : le chef enchaîne des points de passage, les membres suivent
+    const lead = shipById(gs, f.leaderId);
+    if (!lead) continue;
+    if (lead.order.kind !== 'move' && lead.order.kind !== 'attack') {
+      f.patrolAngle += 0.9 + gs.rng() * 0.6;
+      let wp: V2;
+      if (kind === 'patrol_border') {
+        wp = add(home, fromAngle(f.patrolAngle, 330 + gs.rng() * 60));
+      } else if (kind === 'patrol_out') {
+        wp = add(home, fromAngle(f.patrolAngle, 550 + gs.rng() * 350));
+      } else {
+        const spots: V2[] = [home,
+          ...gs.structures.filter(st => st.alive && st.team === f.team).map(st => st.pos),
+          ...gs.planets.filter(pl => pl.alive && pl.owner === f.team).map(pl => pl.pos)];
+        const spot = spots[Math.floor(gs.rng() * spots.length)] ?? home;
+        wp = add(spot, fromAngle(gs.rng() * Math.PI * 2, 40 + gs.rng() * 90));
+      }
+      const dW = len(wp);
+      if (dW > WORLD_R * 0.98) wp = scale(wp, WORLD_R * 0.98 / dW);
+      lead.order = { kind: 'move', pos: wp };
+      for (const id of f.members) {
+        const mm = shipById(gs, id);
+        if (mm && mm.order.kind !== 'attack' && (mm.order.kind !== 'escort' || mm.order.targetId !== lead.id)) {
+          mm.order = { kind: 'escort', targetId: lead.id };
+        }
+      }
+    }
+  }
+}
+
+// ================================================================
+//  MISSILES — verrouillage et tir
+// ================================================================
+export function missileSlot(s: Ship): number {
+  return s.weapons.findIndex(w => w.wid === 'missile');
+}
+export interface LockState { targetId: number; progress: number; ready: boolean }
+
+/** Fait progresser le verrouillage du joueur (touche A maintenue). */
+export function lockTick(gs: GameState, s: Ship, aim: V2, dt: number): LockState | null {
+  const slot = missileSlot(s);
+  if (slot < 0) return null;
+  const w = WEAPONS.missile;
+  if (s.weapons[slot].cd > 0 || s.energy < w.energy || s.empT > 0 || s.mode === 'croisiere' || s.mode === 'espion') {
+    lockCancel(s);
+    return { targetId: -1, progress: 0, ready: false };
+  }
+  // la cible est conservée tant qu'elle est valide ; sinon, la plus proche du curseur
+  let target: Ship | Structure | undefined = shipById(gs, s.lockTargetId) ?? structById(gs, s.lockTargetId);
+  if (!target || !isEnemy(s.team, target.team) || dist(target.pos, s.pos) > w.range * 1.15) {
+    target = undefined;
+    let bd = 160;
+    for (const o of gs.ships) {
+      if (!o.alive || !isEnemy(s.team, o.team) || o.cloakT > 0) continue;
+      if (dist(o.pos, s.pos) > w.range) continue;
+      const d = dist(o.pos, aim);
+      if (d < bd) { bd = d; target = o; }
+    }
+    if (!target) {
+      for (const o of gs.structures) {
+        if (!o.alive || !isEnemy(s.team, o.team)) continue;
+        if (dist(o.pos, s.pos) > w.range) continue;
+        const d = dist(o.pos, aim);
+        if (d < bd) { bd = d; target = o; }
+      }
+    }
+    s.lockTargetId = target ? target.id : -1;
+    s.lockT = 0;
+  }
+  if (s.lockTargetId < 0) return { targetId: -1, progress: 0, ready: false };
+  s.lockT = Math.min(w.lockTime ?? 1.2, s.lockT + dt);
+  return { targetId: s.lockTargetId, progress: s.lockT / (w.lockTime ?? 1.2), ready: s.lockT >= (w.lockTime ?? 1.2) };
+}
+
+/** Relâchement de A : tire si verrouillé, sinon annule. */
+export function lockRelease(gs: GameState, s: Ship): boolean {
+  const slot = missileSlot(s);
+  const w = WEAPONS.missile;
+  const canFire = slot >= 0 && s.lockT >= (w.lockTime ?? 1.2) && s.lockTargetId >= 0
+    && s.weapons[slot].cd <= 0 && s.energy >= w.energy;
+  if (canFire) fireMissile(gs, s, slot, s.lockTargetId);
+  lockCancel(s);
+  return canFire;
+}
+export function lockCancel(s: Ship) { s.lockT = 0; s.lockTargetId = -1; }
+
+function fireMissile(gs: GameState, s: Ship, slot: number, targetId: number) {
+  const w = WEAPONS.missile;
+  s.weapons[slot].cd = w.cd;
+  s.energy -= w.energy;
+  if (s.cloakT > 0) s.cloakT = 0;
+  const target = shipById(gs, targetId) ?? structById(gs, targetId);
+  const dir = target ? norm(sub(target.pos, s.pos)) : fromAngle(s.heading);
+  const from = add(s.pos, fromAngle(s.heading, s.radius + 2));
+  makeProjectile(gs, s.team, 'missile', from, scale(dir, w.speed ?? 150), w.dmg, ((w.range) / (w.speed ?? 150)) * 1.6, targetId);
+  gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'missile' });
+}
+
+/** Distance du missile ennemi le plus proche qui nous traque (-1 si aucun). */
+export function nearestIncomingMissile(gs: GameState, shipId: number): number {
+  const ship = shipById(gs, shipId);
+  if (!ship) return -1;
+  let best = -1;
+  for (const pr of gs.projectiles) {
+    if (!pr.alive || pr.wid !== 'missile' || pr.homingId !== shipId) continue;
+    const d = dist(pr.pos, ship.pos);
+    if (best < 0 || d < best) best = d;
+  }
+  return best;
+}
+/** Un ennemi est-il en train de nous verrouiller ? */
+export function enemyLockingShip(gs: GameState, shipId: number): boolean {
+  return gs.ships.some(s => s.alive && s.id !== shipId && s.lockTargetId === shipId && s.lockT > 0);
+}
+
+// ================================================================
+//  DIPLOMATIE
+// ================================================================
+export function formAlliance(gs: GameState, a: number, b: number) {
+  gs.alliances.add(allyKey(a, b));
+  addLog(gs, `\u{1F91D} Alliance conclue : ${gs.teams[a].name} + ${gs.teams[b].name}.`, '#6dff8a');
+  if (a === gs.playerTeam || b === gs.playerTeam) setAlert(gs, 'ALLIANCE CONCLUE', 3);
+}
+
+export function breakAlliance(gs: GameState, a: number, b: number) {
+  if (!gs.alliances.delete(allyKey(a, b))) return;
+  delete gs.focusTargets[a];
+  delete gs.focusTargets[b];
+  addLog(gs, `\u{1F494} L'alliance ${gs.teams[a].name} / ${gs.teams[b].name} est rompue.`, '#ff8c42');
+}
+
+export function aiAcceptsAlliance(gs: GameState, aiTeam: number, other: number): boolean {
+  const persona = PERSONAS[gs.teams[aiTeam].persona];
+  const my = teamScore(gs, aiTeam);
+  const enemies = gs.activeTeams.filter(id =>
+    gs.teams[id].alive && id !== aiTeam && id !== other && !areAllied(gs, aiTeam, id));
+  if (enemies.length === 0) return false; // pas d'ennemi commun : aucune raison de s'allier
+  const strongest = Math.max(...enemies.map(id => teamScore(gs, id)));
+  if (strongest > my * 1.2) return true;  // menacé : accepte volontiers
+  const friendly = 0.25 + persona.defense * 0.25 + persona.ecoFocus * 0.2 - persona.aggression * 0.25;
+  return gs.rng() < Math.max(0.05, friendly);
+}
+
+/** Propose une alliance. Vers le joueur : crée une offre ; entre IA : résolution immédiate. */
+export function proposeAlliance(gs: GameState, from: number, to: number): string | null {
+  if (from === to || !gs.teams[to]?.alive || !gs.teams[from]?.alive) return 'Équipe invalide';
+  if (areAllied(gs, from, to)) return 'Déjà alliés';
+  if (gs.diploOffers.some(o => o.type === 'alliance'
+    && ((o.from === from && o.to === to) || (o.from === to && o.to === from)))) return 'Offre déjà en attente';
+  if (to === gs.playerTeam && !gs.teams[to].isAI) {
+    gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'alliance', expiresT: gs.t + 25 });
+    addLog(gs, `${gs.teams[from].name} vous propose une alliance.`, gs.teams[from].cssColor);
+    return null;
+  }
+  if (aiAcceptsAlliance(gs, to, from)) formAlliance(gs, from, to);
+  else if (from === gs.playerTeam) addLog(gs, `${gs.teams[to].name} refuse votre alliance.`, gs.teams[to].cssColor);
+  return null;
+}
+
+/** Demande à un allié de cibler une équipe. */
+export function requestFocus(gs: GameState, from: number, to: number, target: number): string | null {
+  if (!areAllied(gs, from, to)) return 'Vous devez être alliés';
+  if (!gs.teams[target]?.alive || areAllied(gs, to, target) || areAllied(gs, from, target)) return 'Cible invalide';
+  if (to === gs.playerTeam && !gs.teams[to].isAI) {
+    if (gs.diploOffers.some(o => o.type === 'target' && o.from === from && o.to === to)) return null;
+    gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'target', target, expiresT: gs.t + 25 });
+    addLog(gs, `${gs.teams[from].name} vous demande de cibler ${gs.teams[target].name}.`, gs.teams[from].cssColor);
+    return null;
+  }
+  const persona = PERSONAS[gs.teams[to].persona];
+  if (gs.rng() < 0.4 + persona.aggression * 0.4) {
+    gs.focusTargets[to] = target;
+    gs.focusTargets[from] = target;
+    addLog(gs, `${gs.teams[to].name} accepte de cibler ${gs.teams[target].name}.`, '#6dff8a');
+  } else if (from === gs.playerTeam) {
+    addLog(gs, `${gs.teams[to].name} décline votre requête.`, gs.teams[to].cssColor);
+  }
+  return null;
+}
+
+export function acceptOffer(gs: GameState, offerId: number) {
+  const o = gs.diploOffers.find(x => x.id === offerId);
+  if (!o) return;
+  gs.diploOffers = gs.diploOffers.filter(x => x.id !== offerId);
+  if (o.type === 'alliance') {
+    formAlliance(gs, o.from, o.to);
+  } else if (o.type === 'target' && o.target != null) {
+    gs.focusTargets[o.to] = o.target;
+    gs.focusTargets[o.from] = o.target;
+    addLog(gs, `Cible commune convenue : ${gs.teams[o.target].name}.`, '#6dff8a');
+  }
+}
+
+export function refuseOffer(gs: GameState, offerId: number) {
+  const o = gs.diploOffers.find(x => x.id === offerId);
+  if (!o) return;
+  gs.diploOffers = gs.diploOffers.filter(x => x.id !== offerId);
+  addLog(gs, `Vous déclinez l'offre de ${gs.teams[o.from].name}.`, '#8fa8c8');
 }

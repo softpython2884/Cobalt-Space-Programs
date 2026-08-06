@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   GameState, V2, v2, dist, len, clamp, lerp, TACTICAL_ZOOM, WORLD_R, PIRATE_TEAM,
 } from './core';
-import { TEAM_DEFS, PIRATE_DEF, WEAPONS, SHIP_CLASSES } from './data';
+import { TEAM_DEFS, PIRATE_DEF, WEAPONS, SHIP_CLASSES, STRUCTS } from './data';
 import {
   buildShip, buildStructure, buildPlanet, buildRoid, buildCloud, buildWreck,
   buildStarBody, buildProjectile, buildMineMesh, mat,
@@ -53,6 +53,8 @@ export class Renderer3D {
   private aimGroup = new THREE.Group();
   private selRings = new THREE.Group();
   private novaRing: THREE.Mesh | null = null;
+  private novaRing2: THREE.Mesh | null = null;
+  private novaLight: THREE.PointLight | null = null;
 
   // effets
   private particles: Particle[] = [];
@@ -146,6 +148,9 @@ export class Renderer3D {
       this.starGroup.remove(c);
     }
     if (this.novaRing) { this.scene.remove(this.novaRing); this.novaRing.geometry.dispose(); this.novaRing = null; }
+    if (this.novaRing2) { this.scene.remove(this.novaRing2); this.novaRing2.geometry.dispose(); this.novaRing2 = null; }
+    if (this.novaLight) { this.scene.remove(this.novaLight); this.novaLight = null; }
+    (this.scene.background as THREE.Color).setHex(0x05070d);
     this.starBuilt = false;
   }
 
@@ -164,24 +169,32 @@ export class Renderer3D {
     return { x: (v.x + 1) / 2 * window.innerWidth, y: (-v.y + 1) / 2 * window.innerHeight };
   }
 
-  /** Entité cliquée : id ou null. */
+  /** Rayon apparent (en pixels) d'un objet de rayon monde `r` situé en `pos`. */
+  private screenRadius(pos: V2, r: number): number {
+    const a = this.screenFromWorld(pos);
+    const b = this.screenFromWorld({ x: pos.x + r, y: pos.y });
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  }
+
+  /** Entité cliquée : id ou null. La zone de clic couvre tout l'objet (rayon projeté). */
   pickEntity(gs: GameState, sx: number, sy: number, visible: Set<number>): number | null {
-    let best: number | null = null, bd = 26;
-    const test = (id: number, pos: V2, bonus = 0) => {
+    let best: number | null = null, bd = Infinity;
+    const test = (id: number, pos: V2, worldR: number, pad: number) => {
       const s = this.screenFromWorld(pos);
-      const d = Math.hypot(s.x - sx, s.y - sy) - bonus;
-      if (d < bd) { bd = d; best = id; }
+      const d = Math.hypot(s.x - sx, s.y - sy);
+      const hit = Math.max(14, this.screenRadius(pos, worldR) + pad);
+      if (d < hit && d < bd) { bd = d; best = id; }
     };
     for (const s of gs.ships) {
       if (!s.alive) continue;
       if (s.team !== gs.playerTeam && !visible.has(s.id)) continue;
-      test(s.id, s.pos, 4);
+      test(s.id, s.pos, s.radius, 10);
     }
-    for (const st of gs.structures) if (st.alive) test(st.id, st.pos, 8);
-    for (const p of gs.planets) if (p.alive) test(p.id, p.pos, 10);
-    for (const r of gs.roids) if (r.alive) test(r.id, r.pos, 2);
-    for (const c of gs.clouds) if (c.alive) test(c.id, c.pos, 8);
-    for (const w of gs.wrecks) if (w.alive) test(w.id, w.pos, 2);
+    for (const st of gs.structures) if (st.alive) test(st.id, st.pos, st.radius, 8);
+    for (const p of gs.planets) if (p.alive) test(p.id, p.pos, p.radius, 6);
+    for (const r of gs.roids) if (r.alive) test(r.id, r.pos, r.radius, 6);
+    for (const c of gs.clouds) if (c.alive) test(c.id, c.pos, c.radius * 0.6, 4);
+    for (const w of gs.wrecks) if (w.alive) test(w.id, w.pos, 6, 8);
     return best;
   }
 
@@ -195,6 +208,70 @@ export class Renderer3D {
     this.aimArc.rotation.x = -Math.PI / 2;
     this.aimArrow = new THREE.Mesh(new THREE.ConeGeometry(1.6, 4, 3), new THREE.MeshBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.9 }));
     this.aimGroup.add(this.aimArc, this.aimArrow);
+  }
+
+  // ---------- Réticule de verrouillage missile ----------
+  private lockGroup = new THREE.Group();
+  private lockRing: THREE.Mesh | null = null;
+  private lockInfo: { targetId: number; progress: number; ready: boolean } | null = null;
+  setLockState(info: { targetId: number; progress: number; ready: boolean } | null) {
+    this.lockInfo = info;
+  }
+  private updateLockReticle(gs: GameState) {
+    if (!this.lockRing) {
+      this.lockRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.86, 1, 4),
+        new THREE.MeshBasicMaterial({ color: 0xff4b4b, transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      );
+      this.lockRing.rotation.x = -Math.PI / 2;
+      this.lockGroup.add(this.lockRing);
+      this.scene.add(this.lockGroup);
+    }
+    const info = this.lockInfo;
+    const target = info && info.targetId >= 0
+      ? (gs.ships.find(x => x.id === info.targetId && x.alive) ?? gs.structures.find(x => x.id === info.targetId && x.alive))
+      : undefined;
+    if (!info || !target) { this.lockGroup.visible = false; return; }
+    this.lockGroup.visible = true;
+    this.lockGroup.position.set(target.pos.x, 2, target.pos.y);
+    const r = target.radius + 6;
+    this.lockRing.scale.setScalar(r + (1 - info.progress) * 14);
+    this.lockRing.rotation.z += 0.05;
+    const m = this.lockRing.material as THREE.MeshBasicMaterial;
+    if (info.ready) {
+      m.color.setHex(0x6dff8a);
+      m.opacity = Math.sin(this.time * 18) > 0 ? 1 : 0.4;
+    } else {
+      m.color.setHex(0xff4b4b).lerp(new THREE.Color(0x6dff8a), info.progress * 0.6);
+      m.opacity = 0.9;
+    }
+  }
+
+  // ---------- Fantôme de construction ----------
+  private ghost: THREE.Group | null = null;
+  setGhost(pos: V2 | null, radius: number, ok: boolean) {
+    if (!pos) { if (this.ghost) this.ghost.visible = false; return; }
+    if (!this.ghost) {
+      this.ghost = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.94, 1, 40),
+        new THREE.MeshBasicMaterial({ color: 0x6dff8a, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.name = 'gring';
+      const core = new THREE.Mesh(new THREE.CylinderGeometry(4, 5, 5, 6),
+        new THREE.MeshBasicMaterial({ color: 0x6dff8a, transparent: true, opacity: 0.35 }));
+      core.name = 'gcore';
+      this.ghost.add(ring, core);
+      this.scene.add(this.ghost);
+    }
+    this.ghost.visible = true;
+    this.ghost.position.set(pos.x, 1, pos.y);
+    const ring = this.ghost.getObjectByName('gring') as THREE.Mesh;
+    ring.scale.setScalar(radius);
+    const color = ok ? 0x6dff8a : 0xff4b4b;
+    (ring.material as THREE.MeshBasicMaterial).color.setHex(color);
+    ((this.ghost.getObjectByName('gcore') as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setHex(color);
   }
 
   // ================================================================
@@ -211,6 +288,7 @@ export class Renderer3D {
     this.updateEffects(dt);
     this.updateCamera(gs, dt, tactical);
     this.updateAim(gs, aimWorld, tactical);
+    this.updateLockReticle(gs);
     this.grid.visible = tactical;
 
     this.renderer.render(this.scene, this.camera);
@@ -237,6 +315,16 @@ export class Renderer3D {
         this.novaRing.rotation.x = -Math.PI / 2;
         this.novaRing.visible = false;
         this.scene.add(this.novaRing);
+        this.novaRing2 = new THREE.Mesh(
+          new THREE.RingGeometry(0.82, 1, 96),
+          new THREE.MeshBasicMaterial({ color: 0xffd84b, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+        );
+        this.novaRing2.rotation.x = -Math.PI / 2;
+        this.novaRing2.visible = false;
+        this.scene.add(this.novaRing2);
+        this.novaLight = new THREE.PointLight(0xff4b2f, 0, 4000, 0.8);
+        this.novaLight.position.set(0, 120, 0);
+        this.scene.add(this.novaLight);
       }
     }
     gs.map.bodies.forEach((b, i) => {
@@ -252,12 +340,33 @@ export class Renderer3D {
       if (disk) disk.rotation.z += dt * 0.5;
       const disk2 = g.getObjectByName('disk2');
       if (disk2) disk2.rotation.z -= dt * 0.9;
+      const photon = g.getObjectByName('photon');
+      if (photon) photon.rotation.z += dt * 1.4;
+      // faisceaux du pulsar : balayage type phare
+      const beams = g.getObjectByName('beams');
+      if (beams) beams.rotation.y += dt * 2.6;
+      // la supergéante gonfle et palpite dans ses 30 dernières secondes
+      if (gs.map.supernovaAt > 0 && gs.supernovaWave < 0) {
+        const left = gs.map.supernovaAt - gs.t;
+        if (left < 30) {
+          const prog = 1 - left / 30;
+          const sc = 1 + prog * 0.55 + Math.sin(this.time * (6 + prog * 14)) * 0.06 * prog;
+          g.scale.setScalar(sc);
+        }
+      }
     });
-    // onde de supernova
+    // onde de supernova : double anneau + lumière rouge + le ciel s'embrase
     if (this.novaRing) {
       if (gs.supernovaWave > 0) {
         this.novaRing.visible = true;
         this.novaRing.scale.setScalar(gs.supernovaWave);
+        if (this.novaRing2) {
+          this.novaRing2.visible = true;
+          this.novaRing2.scale.setScalar(Math.max(1, gs.supernovaWave * 0.82));
+        }
+        if (this.novaLight) this.novaLight.intensity = Math.min(3.2, gs.supernovaWave / 250);
+        const f = Math.min(1, gs.supernovaWave / 1200);
+        (this.scene.background as THREE.Color).setRGB(0.02 + f * 0.16, 0.027 - f * 0.02, 0.05 - f * 0.03);
       }
     }
   }
@@ -346,6 +455,26 @@ export class Renderer3D {
       m.position.set(p.pos.x, 0, p.pos.y);
       const globe = m.getObjectByName('globe');
       if (globe) globe.rotation.y += dt * 0.08;
+      // planète frappée : rougeoiement croissant + tremblements
+      let doom = m.getObjectByName('doom') as THREE.Mesh | undefined;
+      if (p.dyingT > 0) {
+        if (!doom) {
+          doom = new THREE.Mesh(
+            new THREE.IcosahedronGeometry(p.radius * 1.03, 1),
+            new THREE.MeshBasicMaterial({ color: 0xff3b1f, transparent: true, opacity: 0 }),
+          );
+          doom.name = 'doom';
+          m.add(doom);
+        }
+        const prog = 1 - p.dyingT / 4;
+        (doom.material as THREE.MeshBasicMaterial).opacity = prog * 0.85;
+        m.position.x += (Math.random() - 0.5) * prog * 3;
+        m.position.z += (Math.random() - 0.5) * prog * 3;
+      } else if (doom) {
+        m.remove(doom);
+        doom.geometry.dispose();
+        (doom.material as THREE.Material).dispose();
+      }
       const ownerRing = m.getObjectByName('ownerRing') as THREE.Mesh | undefined;
       if (ownerRing) {
         const mm = ownerRing.material as THREE.MeshBasicMaterial;
@@ -413,6 +542,10 @@ export class Renderer3D {
       }
       m.position.set(p.pos.x, 0, p.pos.y);
       m.rotation.y = -Math.atan2(p.vel.y, p.vel.x);
+      // traînée des missiles
+      if (p.wid === 'missile' && Math.random() < dt * 40) {
+        this.spawnParticles(new THREE.Vector3(p.pos.x, 2, p.pos.y), 0xff7ad8, 1, 6, 0.35, 1.6);
+      }
     }
 
     // Mines posées
@@ -692,7 +825,17 @@ export class Renderer3D {
     }
     const want = new THREE.Vector3(target.x, this.camH, target.y + this.camH * 0.22);
     this.camCur.lerp(want, Math.min(1, 6 * dt));
-    this.camera.position.copy(this.camCur);
+    // secousses : onde de supernova proche
+    let shake = 0;
+    if (gs.supernovaWave > 0) {
+      const dWave = Math.abs(gs.supernovaWave - Math.hypot(this.camCur.x, this.camCur.z));
+      shake = clamp(7 * (1 - dWave / 800), 0, 7);
+    }
+    this.camera.position.set(
+      this.camCur.x + (Math.random() - 0.5) * shake,
+      this.camCur.y + (Math.random() - 0.5) * shake * 0.4,
+      this.camCur.z + (Math.random() - 0.5) * shake,
+    );
     this.camera.lookAt(this.camCur.x, 0, this.camCur.z - this.camH * 0.22);
   }
 

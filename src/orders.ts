@@ -24,6 +24,7 @@ export function createFleet(gs: GameState, team: number, shipIds: number[], form
     members: ships.slice(1).map(s => s.id),
     formation,
     mission: { ...IDLE },
+    patrolAngle: 0,
   };
   for (const s of ships) s.fleetId = fleet.id;
   gs.fleets.push(fleet);
@@ -163,6 +164,10 @@ export function missionLabel(gs: GameState, f: Fleet): string {
     case 'move': return 'Déplacement';
     case 'guard': return 'Garde';
     case 'colonize': return 'Colonisation';
+    case 'mine_auto': return 'Minage auto';
+    case 'patrol_in': return 'Patrouille int.';
+    case 'patrol_border': return 'Patrouille bordure';
+    case 'patrol_out': return 'Patrouille ext.';
     default: return 'En attente';
   }
 }
