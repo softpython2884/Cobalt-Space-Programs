@@ -25,6 +25,7 @@ export function createFleet(gs: GameState, team: number, shipIds: number[], form
     formation,
     mission: { ...IDLE },
     patrolAngle: 0,
+    stance: 'feu',
   };
   for (const s of ships) s.fleetId = fleet.id;
   gs.fleets.push(fleet);
@@ -168,6 +169,11 @@ export function missionLabel(gs: GameState, f: Fleet): string {
     case 'patrol_in': return 'Patrouille int.';
     case 'patrol_border': return 'Patrouille bordure';
     case 'patrol_out': return 'Patrouille ext.';
+    case 'protect': return 'Protection amiral';
+    case 'trade_auto': return 'Commerce auto';
+    case 'patrol_civil': return 'Patrouille civile';
+    case 'plan': return 'Plan d\'attaque';
+    case 'orbit': return 'Garde orbitale';
     default: return 'En attente';
   }
 }

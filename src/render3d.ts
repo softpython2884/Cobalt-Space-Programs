@@ -6,8 +6,9 @@ import {
 import { TEAM_DEFS, PIRATE_DEF, WEAPONS, SHIP_CLASSES, STRUCTS } from './data';
 import {
   buildShip, buildStructure, buildPlanet, buildRoid, buildCloud, buildWreck,
-  buildStarBody, buildProjectile, buildMineMesh, mat,
+  buildStarBody, buildProjectile, buildMineMesh, buildStorm, mat,
 } from './meshes';
+import type { ShipClassId } from './core';
 
 interface Particle { p: THREE.Vector3; v: THREE.Vector3; life: number; maxLife: number; color: THREE.Color; size: number }
 interface Beam { line: THREE.Line; life: number; maxOpacity: number }
@@ -29,6 +30,12 @@ function disposeObject(obj: THREE.Object3D) {
 interface Ring { mesh: THREE.Mesh; life: number; maxLife: number; from: number; to: number }
 
 const MAX_PARTICLES = 900;
+
+/** Initiale affichée sur l'icône tactique de chaque classe. */
+const CLASS_LETTER: Record<ShipClassId, string> = {
+  corvette: 'V', chasseur: 'C', bombardier: 'B', croiseur: 'K',
+  mineur: 'M', cargo: 'G', transporteur: 'T', raider: 'P',
+};
 
 function teamColorOf(team: number): number {
   if (team === PIRATE_TEAM) return PIRATE_DEF.color;
@@ -247,6 +254,46 @@ export class Renderer3D {
     }
   }
 
+  // ---------- Marqueurs du plan d'attaque ----------
+  private planGroup = new THREE.Group();
+  private planAdded = false;
+  setPlanMarkers(stagings: V2[], objective: V2 | null, armed: boolean) {
+    if (!this.planAdded) { this.scene.add(this.planGroup); this.planAdded = true; }
+    // reconstruit (peu d'éléments, appelé seulement en vue tactique)
+    while (this.planGroup.children.length) {
+      const c = this.planGroup.children[0] as THREE.Mesh;
+      this.planGroup.remove(c);
+      c.geometry?.dispose();
+      (c.material as THREE.Material)?.dispose();
+    }
+    for (const st of stagings) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(16, 19, 4),
+        new THREE.MeshBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.rotation.z = Math.PI / 4;
+      ring.position.set(st.x, 2, st.y);
+      this.planGroup.add(ring);
+    }
+    if (objective) {
+      const obj = new THREE.Mesh(
+        new THREE.RingGeometry(22, 27, 32),
+        new THREE.MeshBasicMaterial({ color: armed ? 0xff4b4b : 0xffd84b, transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      );
+      obj.rotation.x = -Math.PI / 2;
+      obj.position.set(objective.x, 2, objective.y);
+      this.planGroup.add(obj);
+      const cross = new THREE.Mesh(
+        new THREE.RingGeometry(3, 6, 4),
+        new THREE.MeshBasicMaterial({ color: armed ? 0xff4b4b : 0xffd84b, side: THREE.DoubleSide }),
+      );
+      cross.rotation.x = -Math.PI / 2;
+      cross.position.set(objective.x, 2, objective.y);
+      this.planGroup.add(cross);
+    }
+  }
+
   // ---------- Fantôme de construction ----------
   private ghost: THREE.Group | null = null;
   setGhost(pos: V2 | null, radius: number, ok: boolean) {
@@ -408,8 +455,9 @@ export class Renderer3D {
       const drill = m.getObjectByName('drill') as THREE.Mesh | undefined;
       if (drill && s.miningRes) drill.rotation.x += dt * 8;
 
-      // icône tactique
-      this.syncIcon(s.id, s.pos, s.isFlagship ? 'diamond' : 'tri', teamColorOf(s.team), tactical && detected, s.heading);
+      // icône tactique : forme + lettre selon la classe
+      const iconShape = s.isFlagship ? 'diamond' : SHIP_CLASSES[s.cls].civil ? 'circle' : 'tri';
+      this.syncIcon(s.id, s.pos, iconShape, teamColorOf(s.team), tactical && detected, s.heading, CLASS_LETTER[s.cls]);
     }
 
     // Structures
@@ -515,6 +563,26 @@ export class Renderer3D {
       m.rotation.y += dt * 0.05;
     }
 
+    // Nuages électriques
+    for (const sc of gs.storms) {
+      if (!sc.alive) continue;
+      seen.add(sc.id);
+      let m = this.meshes.get(sc.id);
+      if (!m) {
+        m = buildStorm(sc.radius, sc.id * 3.7);
+        this.meshes.set(sc.id, m);
+        this.scene.add(m);
+      }
+      m.position.set(sc.pos.x, 4, sc.pos.y);
+      m.rotation.y += dt * 0.1;
+      const spark = m.getObjectByName('spark') as THREE.Mesh | undefined;
+      if (spark) {
+        // crépitement : le cœur clignote irrégulièrement
+        (spark.material as THREE.MeshBasicMaterial).opacity = Math.random() < 0.08 ? 1 : 0.35 + Math.sin(this.time * 7) * 0.15;
+        spark.scale.setScalar(1 + Math.sin(this.time * 11) * 0.2);
+      }
+    }
+
     // Épaves
     for (const w of gs.wrecks) {
       if (!w.alive) continue;
@@ -578,21 +646,21 @@ export class Renderer3D {
   }
 
   // ---------- Icônes tactiques ----------
-  private syncIcon(id: number, pos: V2, shape: string, color: number, show: boolean, heading: number) {
+  private syncIcon(id: number, pos: V2, shape: string, color: number, show: boolean, heading: number, letter = '') {
     let icon = this.icons.get(id);
     if (!show) { if (icon) icon.visible = false; return; }
-    const key = `${shape}|${color}`;
+    const key = `${shape}|${color}|${letter}`;
     if (!icon) {
       // matériau CLONÉ : la rotation de SpriteMaterial est par instance, un
       // matériau partagé ferait tourner toutes les icônes avec le dernier cap
-      icon = new THREE.Sprite(this.iconMaterial(shape, color).clone());
+      icon = new THREE.Sprite(this.iconMaterial(shape, color, letter).clone());
       icon.userData.key = key;
       this.icons.set(id, icon);
       this.scene.add(icon);
     } else if (icon.userData.key !== key) {
       // la couleur/forme a changé (colonisation, transfert d'amiral…)
       icon.material.dispose();
-      icon.material = this.iconMaterial(shape, color).clone();
+      icon.material = this.iconMaterial(shape, color, letter).clone();
       icon.userData.key = key;
     }
     icon.visible = true;
@@ -602,8 +670,8 @@ export class Renderer3D {
     if (shape === 'tri' || shape === 'diamond') icon.material.rotation = -heading - Math.PI / 2;
   }
 
-  private iconMaterial(shape: string, color: number): THREE.SpriteMaterial {
-    const key = `${shape}|${color}`;
+  private iconMaterial(shape: string, color: number, letter = ''): THREE.SpriteMaterial {
+    const key = `${shape}|${color}|${letter}`;
     let m = this.iconTexCache.get(key);
     if (m) return m;
     const c = document.createElement('canvas');
@@ -624,6 +692,13 @@ export class Renderer3D {
     }
     ctx.closePath();
     ctx.fill(); ctx.stroke();
+    if (letter) {
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      ctx.font = 'bold 17px Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(letter, 24, shape === 'tri' ? 30 : 25);
+    }
     const tex = new THREE.CanvasTexture(c);
     m = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
     this.iconTexCache.set(key, m);
@@ -725,6 +800,37 @@ export class Renderer3D {
         case 'fumee':
           this.spawnParticles(p3, 0x9aa0a8, 30, 18, 1.4, 5);
           break;
+        case 'eclair': {
+          if (!fx.pos2) break;
+          // éclair en zigzag : segments décalés aléatoirement
+          const pts: THREE.Vector3[] = [];
+          const segs = 7;
+          for (let i = 0; i <= segs; i++) {
+            const t = i / segs;
+            const jx = i === 0 || i === segs ? 0 : (Math.random() - 0.5) * 22;
+            const jz = i === 0 || i === segs ? 0 : (Math.random() - 0.5) * 22;
+            pts.push(new THREE.Vector3(
+              fx.pos.x + (fx.pos2.x - fx.pos.x) * t + jx, 4,
+              fx.pos.y + (fx.pos2.y - fx.pos.y) * t + jz));
+          }
+          const g2 = new THREE.BufferGeometry().setFromPoints(pts);
+          const line = new THREE.Line(g2, new THREE.LineBasicMaterial({ color: 0xe8ccff, transparent: true, opacity: 1 }));
+          this.scene.add(line);
+          this.beams.push({ line, life: 0.22, maxOpacity: 1 });
+          this.spawnParticles(new THREE.Vector3(fx.pos2.x, 3, fx.pos2.y), 0xc86bff, 16, 34, 0.4, 2.4);
+          break;
+        }
+        case 'stase_fx': {
+          // bulle violette qui fige la cible
+          const bub = new THREE.Mesh(
+            new THREE.IcosahedronGeometry((fx.size ?? 8) * 1.25, 1),
+            new THREE.MeshBasicMaterial({ color: 0x9c6bff, transparent: true, opacity: 0.4, wireframe: true }),
+          );
+          bub.position.copy(p3);
+          this.scene.add(bub);
+          this.rings.push({ mesh: bub, life: 0.6, maxLife: 0.6, from: 0.8, to: 1.15 });
+          break;
+        }
       }
     }
     gs.fx.length = 0;

@@ -56,7 +56,7 @@ export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider';
 export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile';
 export type MineType = 'frag' | 'emp' | 'aimant';
-export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite';
+export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo';
 export type PlanetType = 'tellurique' | 'glace' | 'lave' | 'gazeuse' | 'oceanique' | 'desert';
 export type StarType = 'sol_jaune' | 'sol_rouge' | 'sol_bleu' | 'sol_violet' | 'naine_blanche' | 'binaire' | 'triple' | 'neutron' | 'trou_noir' | 'supergeante';
 export type PersonaId = 'agressif' | 'econome' | 'opportuniste' | 'defensif' | 'equilibre';
@@ -66,8 +66,8 @@ export type GadgetId = 'fumee' | 'camouflage' | 'frappe' | 'soutien' | 'bouclier
 
 // ---------- Ordres ----------
 // (les 4 derniers sont des missions de flotte, jamais des ordres de vaisseau)
-export type OrderKind = 'idle' | 'move' | 'attack' | 'mine' | 'trade' | 'escort' | 'colonize' | 'guard' | 'dock' | 'flee' | 'salvage'
-  | 'mine_auto' | 'patrol_in' | 'patrol_border' | 'patrol_out';
+export type OrderKind = 'idle' | 'move' | 'attack' | 'mine' | 'trade' | 'escort' | 'colonize' | 'guard' | 'dock' | 'flee' | 'salvage' | 'orbit'
+  | 'mine_auto' | 'patrol_in' | 'patrol_border' | 'patrol_out' | 'protect' | 'trade_auto' | 'patrol_civil' | 'plan';
 export interface Order {
   kind: OrderKind;
   pos?: V2;            // destination (move/guard)
@@ -171,7 +171,7 @@ export interface SmokeZone { id: number; pos: V2; radius: number; t: number }
 
 /** Événements visuels/sonores produits par la sim, consommés par le rendu. */
 export interface FxEvent {
-  type: 'tir' | 'impact' | 'explosion' | 'beam' | 'saut' | 'onde' | 'frappe' | 'bulle' | 'fumee' | 'colonise' | 'minage';
+  type: 'tir' | 'impact' | 'explosion' | 'beam' | 'saut' | 'onde' | 'frappe' | 'bulle' | 'fumee' | 'colonise' | 'minage' | 'eclair' | 'stase_fx';
   pos: V2; pos2?: V2; color?: number; size?: number; wid?: WeaponId;
 }
 
@@ -199,6 +199,8 @@ export interface TeamState {
 }
 
 // ---------- Flottes ----------
+export type Stance = 'feu' | 'defense' | 'paix';   // à vue / riposte / ne pas tirer
+
 export interface Fleet {
   id: number;
   team: number;
@@ -208,6 +210,23 @@ export interface Fleet {
   formation: FormationId;
   mission: Order;
   patrolAngle: number;    // progression des patrouilles / rotation des points
+  stance: Stance;
+}
+
+// ---------- Plan d'attaque (vue tactique) ----------
+export type PlanFilter = 'stations' | 'structures' | 'armes' | 'tout';
+export interface PlanState {
+  filter: PlanFilter;
+  objective: V2 | null;
+  armed: boolean;         // ENTRÉE pressée : les flottes avancent vers l'objectif
+}
+
+// ---------- Nuages électriques ----------
+export interface StormCloud {
+  id: number; kind: 'storm';
+  pos: V2; vel: V2; radius: number;
+  boltT: number;
+  alive: boolean;
 }
 
 // ---------- Diplomatie ----------
@@ -289,6 +308,10 @@ export interface GameState {
   diploOffers: DiploOffer[];   // propositions en attente (surtout vers le joueur)
   focusTargets: Record<number, number>;  // équipe -> cible convenue avec un allié
 
+  storms: StormCloud[];        // nuages électriques (apparaissent en cours de partie)
+  stormT: number;              // prochain spawn de nuage
+  plan: PlanState;             // plan d'attaque du joueur
+
   log: { t: number; text: string; color: string }[];
   alertText: string; alertT: number;
 }
@@ -314,7 +337,7 @@ export function addLog(gs: GameState, text: string, color = '#8fa8c8') {
   gs.log.push({ t: gs.t, text, color });
   if (gs.log.length > 60) gs.log.shift();
 }
-export function setAlert(gs: GameState, text: string, dur = 3) {
+export function setAlert(gs: GameState, text: string, dur = 4.5) {
   gs.alertText = text; gs.alertT = dur;
 }
 

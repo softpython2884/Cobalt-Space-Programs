@@ -56,6 +56,8 @@ export function newGame(cfg: MatchConfig): GameState {
     pirateT: 100,
     supernovaWave: -1,
     alliances: new Set(), diploOffers: [], focusTargets: {},
+    storms: [], stormT: 480 + rng() * 120,
+    plan: { filter: 'tout', objective: null, armed: false },
     log: [], alertText: '', alertT: 0,
   };
 

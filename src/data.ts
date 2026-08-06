@@ -30,8 +30,8 @@ export interface WeaponDef {
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   canon: { id: 'canon', nom: 'Canon', type: 'proj', dmg: 9, cd: 0.45, range: 200, energy: 4, speed: 260, color: 0xffd27a, prix: 0, desc: 'Polyvalent et fiable.' },
   canon_auto: { id: 'canon_auto', nom: 'Canon automatique', type: 'proj', dmg: 3, cd: 0.11, range: 160, energy: 1.4, speed: 300, spread: 0.07, color: 0xffe9a8, prix: 250, desc: 'Cadence élevée, faible portée.' },
-  laser: { id: 'laser', nom: 'Laser', type: 'beam', dmg: 13, cd: 0.8, range: 190, energy: 7, color: 0xff5d5d, prix: 350, desc: 'Touche instantanément.' },
-  stase: { id: 'stase', nom: 'Rayon de stase', type: 'beam', dmg: 3, cd: 1.0, range: 170, energy: 8, slowFactor: 0.45, slowDur: 1.6, color: 0x9c6bff, prix: 400, desc: 'Ralentit fortement la cible.' },
+  laser: { id: 'laser', nom: 'Laser à faisceau', type: 'beam', dmg: 2.6, cd: 0.11, range: 200, energy: 1.5, color: 0xff5d5d, prix: 350, desc: 'Faisceau continu tant que vous maintenez le tir.' },
+  stase: { id: 'stase', nom: 'Rayon de stase', type: 'beam', dmg: 5, cd: 1.2, range: 190, energy: 10, slowFactor: 0.4, slowDur: 2.4, color: 0x9c6bff, prix: 400, desc: 'Fige la cible dans un champ violet et draine son énergie.' },
   torpille: { id: 'torpille', nom: 'Torpille', type: 'homing', dmg: 42, cd: 2.4, range: 280, energy: 12, speed: 110, aoe: 18, color: 0x7adfff, prix: 500, desc: 'Lente, dévastatrice contre les structures.' },
   plasma: { id: 'plasma', nom: 'Canon à plasma', type: 'proj', dmg: 22, cd: 1.1, range: 210, energy: 9, speed: 200, aoe: 10, color: 0x6dff8a, prix: 450, desc: 'Gros dégâts de zone.' },
   canon_lourd: { id: 'canon_lourd', nom: 'Canon lourd', type: 'proj', dmg: 30, cd: 1.5, range: 250, energy: 11, speed: 230, color: 0xffb35d, prix: 600, desc: 'L\'artillerie des croiseurs.' },
@@ -142,6 +142,7 @@ export const STRUCTS: Record<StructType, StructDef> = {
   avantposte: { stype: 'avantposte', nom: 'Avant-poste', hull: 520, shield: 160, radius: 12, sensor: 300, prix: 600, weaponRange: 190, weaponDmg: 12, weaponCd: 0.6, desc: 'Tourelle défensive, étend le territoire.' },
   mine: { stype: 'mine', nom: 'Mine spatiale', hull: 200, shield: 40, radius: 10, sensor: 140, prix: 400, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Revenu passif si placée près d\'astéroïdes.' },
   satellite: { stype: 'satellite', nom: 'Satellite', hull: 60, shield: 20, radius: 5, sensor: 420, prix: 150, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Œil lointain, très fragile.' },
+  labo: { stype: 'labo', nom: 'Laboratoire', hull: 260, shield: 140, radius: 11, sensor: 180, prix: 700, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Gros revenus, mais doit être bâti DANS un nuage électrique.' },
 };
 
 // ---------- Économie ----------
@@ -150,6 +151,8 @@ export const START_CREDITS = 600;
 export const PLANET_INCOME = 70;          // crédits / 30 s / planète
 export const PLANET_INCOME_PERIOD = 30;
 export const MINE_INCOME = 30;            // crédits / 12 s si près d'astéroïdes
+export const LABO_INCOME = 70;            // crédits / 10 s si dans un nuage électrique
+export const LABO_INCOME_PERIOD = 10;
 export const MINE_INCOME_PERIOD = 12;
 export const PASSIVE_INCOME = 12;         // crédits / 10 s (station vivante)
 export const PASSIVE_INCOME_PERIOD = 10;
@@ -204,6 +207,14 @@ export const STATION_LEVEL_DESC = [
   'Niv. 2 : débloque Bombardier, Croiseur, Camouflage, Bouclier orbital.',
   'Niv. 3 : débloque Frappe orbitale et Flotte de soutien.',
 ];
+
+// ---------- Gardes orbitales (achetées en vue tactique) ----------
+export const GUARD_COST = [0, 500, 650, 850];   // indexé par niveau de station
+export const GUARD_COMP: Record<number, ShipClassId[]> = {
+  1: ['chasseur', 'chasseur'],
+  2: ['chasseur', 'chasseur', 'chasseur'],
+  3: ['chasseur', 'chasseur', 'croiseur'],
+};
 
 // ---------- Personnalités IA ----------
 export interface PersonaDef {

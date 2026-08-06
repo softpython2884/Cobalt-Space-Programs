@@ -46,6 +46,10 @@ export class HUD {
   private flashUntil = 0;
   diploOpen = false;
   onFleetMission: (kind: string) => void = () => {};
+  onStance: (stance: string) => void = () => {};
+  onPlanToggle: () => void = () => {};
+  onPlanObjective: () => void = () => {};
+  onPlanFilter: (f: string) => void = () => {};
   onDiploPropose: (team: number) => void = () => {};
   onDiploBreak: (team: number) => void = () => {};
   onDiploFocus: (team: number, target: number) => void = () => {};
@@ -292,9 +296,10 @@ export class HUD {
       // séquence radio : allumage, souffle statique, puis le texte s'affiche
       if (this.curAlert !== gs.alertText) {
         this.curAlert = gs.alertText;
-        this.alertRevealT = performance.now() + 560;
+        this.alertRevealT = performance.now() + 950;
         sfx.radioOn();
-        window.setTimeout(() => sfx.radioStatic(), 180);
+        window.setTimeout(() => sfx.bipbip(), 120);
+        window.setTimeout(() => sfx.radioStatic(), 420);
       }
       alert.classList.remove('hidden');
       const now = performance.now();
@@ -489,7 +494,7 @@ export class HUD {
     const box = $('build-list');
     box.innerHTML = '';
     const team = gs.teams[gs.playerTeam];
-    (['avantposte', 'mine', 'satellite'] as StructType[]).forEach(stype => {
+    (['avantposte', 'mine', 'satellite', 'labo'] as StructType[]).forEach(stype => {
       const def = STRUCTS[stype];
       const item = document.createElement('div');
       const afford = team.credits >= def.prix;
@@ -647,6 +652,17 @@ export class HUD {
     document.querySelectorAll('#tb-missions .msn').forEach(el => {
       (el as HTMLElement).onclick = () => this.onFleetMission((el as HTMLElement).dataset.msn!);
     });
+    document.querySelectorAll('#tb-stances .stc').forEach(el => {
+      (el as HTMLElement).onclick = () => this.onStance((el as HTMLElement).dataset.stc!);
+    });
+    document.querySelectorAll('#tb-plan .pfl').forEach(el => {
+      (el as HTMLElement).onclick = () => {
+        document.querySelectorAll('#tb-plan .pfl').forEach(e2 => e2.classList.toggle('active', e2 === el));
+        this.onPlanFilter((el as HTMLElement).dataset.pfl!);
+      };
+    });
+    $('btn-plan-toggle').onclick = () => this.onPlanToggle();
+    $('btn-plan-obj').onclick = () => this.onPlanObjective();
   }
 
   refreshShop(gs: GameState) {
@@ -813,6 +829,14 @@ export class HUD {
   }
   closeCtxMenu() { $('ctxmenu').classList.add('hidden'); }
   get ctxOpen(): boolean { return !$('ctxmenu').classList.contains('hidden'); }
+
+  setPlanUI(mode: 'off' | 'staging' | 'objective', armed: boolean, hint: string) {
+    $('btn-plan-toggle').classList.toggle('active', mode !== 'off');
+    $('btn-plan-obj').classList.toggle('active', mode === 'objective');
+    const ph = $('plan-hint');
+    ph.textContent = hint;
+    ph.style.color = armed ? '#ff4b4b' : '';
+  }
 
   setSelectBox(r: { x0: number; y0: number; x1: number; y1: number } | null) {
     const el = $('selectbox');

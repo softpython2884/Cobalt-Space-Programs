@@ -62,9 +62,29 @@
       <div class="tb-section" id="tb-missions">
         <span class="tb-label">Mission de flotte :</span>
         <button class="tb-btn msn" data-msn="mine_auto">⛏ Minage auto</button>
+        <button class="tb-btn msn" data-msn="trade_auto">⇄ Commerce</button>
+        <button class="tb-btn msn" data-msn="protect">Protéger l'amiral</button>
+        <button class="tb-btn msn" data-msn="patrol_civil">🛡 Patr. civile</button>
         <button class="tb-btn msn" data-msn="patrol_in">🛡 Patr. intérieure</button>
         <button class="tb-btn msn" data-msn="patrol_border">🛡 Patr. bordure</button>
         <button class="tb-btn msn" data-msn="patrol_out">🛡 Patr. extérieure</button>
+      </div>
+      <div class="tb-section" id="tb-stances">
+        <span class="tb-label">Doctrine de tir :</span>
+        <button class="tb-btn stc" data-stc="feu">🛡 À vue</button>
+        <button class="tb-btn stc" data-stc="defense">🛡 Défense</button>
+        <button class="tb-btn stc" data-stc="paix">🛡 Ne pas tirer</button>
+      </div>
+      <div class="tb-section" id="tb-plan">
+        <span class="tb-label">Plan d'attaque <span class="kbd">P</span> :</span>
+        <button id="btn-plan-toggle" class="tb-btn">Mode plan</button>
+        <button id="btn-plan-obj" class="tb-btn">Objectif</button>
+        <span class="tb-label" id="plan-filter-label">Cibles autorisées :</span>
+        <button class="tb-btn pfl" data-pfl="tout">Tout</button>
+        <button class="tb-btn pfl" data-pfl="armes">Armés</button>
+        <button class="tb-btn pfl" data-pfl="structures">Structures</button>
+        <button class="tb-btn pfl" data-pfl="stations">Stations</button>
+        <span class="tb-label" id="plan-hint"></span>
       </div>
       <div class="tb-section" id="tb-fleets"></div>
       <div class="tb-hint">Glisser : sélection · Clic droit : ordre contextuel · Molette : zoom</div>

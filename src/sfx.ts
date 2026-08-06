@@ -85,6 +85,12 @@ export const sfx = {
   // --- radio ---
   radioOn() { osc('sine', 300, 0.08, 0.09, 1400); },
   radioStatic() { noise(0.35, 0.12, 2600, 800); },
+  bipbip() { osc('sine', 1050, 0.06, 0.1); setTimeout(() => osc('sine', 1050, 0.06, 0.1), 140); },
+  siren() {
+    osc('sawtooth', 420, 0.5, 0.14, 780);
+    setTimeout(() => osc('sawtooth', 780, 0.5, 0.14, 420), 500);
+  },
+  thunder(vol = 1) { noise(0.7, 0.35 * vol, 400, 60); osc('triangle', 60, 0.5, 0.15 * vol, 25); },
 };
 
 // ---------- Moteur du vaisseau (boucle continue) ----------
@@ -126,6 +132,7 @@ export function playFx(gs: GameState, listener: V2) {
       case 'onde': sfx.wave(Math.max(v, 0.35)); break;   // les grandes ondes s'entendent de loin
       case 'frappe': sfx.explosion(true, Math.max(v, 0.4)); break;
       case 'impact': if (v > 0.04 && shots++ < 4) sfx.impact(v); break;
+      case 'eclair': sfx.thunder(Math.max(v, 0.25)); break;
     }
   }
 }

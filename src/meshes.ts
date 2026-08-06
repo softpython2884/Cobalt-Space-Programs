@@ -163,14 +163,41 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       break;
     }
     case 'transporteur': {
-      g.add(box(7, 2.6, 3.6, mid));
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(1.8, 6, 4), accent);
-      dome.position.set(1, 1.4, 0); dome.scale.y = 0.7;
-      g.add(dome);
-      g.add(cone(1.5, 2.4, 6, light, 4.6));
-      g.add(box(3, 1.4, 5.6, dark, -1.5));
-      g.add(box(1.2, 0.6, 6.6, accent, -2.5, 0.6, 0));
-      g.add(engineFlame(0x7adfff, -4.2, 0.4, 1));
+      // vaisseau-colonie : coque fuselée en capsule + grand dôme d'habitat vitré
+      const hull = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 1.9, 7.5, 8), mid);
+      hull.rotation.z = Math.PI / 2;
+      g.add(hull);
+      const noseCap = new THREE.Mesh(new THREE.SphereGeometry(1.7, 8, 5), light);
+      noseCap.position.x = 3.8; noseCap.scale.x = 1.5;
+      g.add(noseCap);
+      // dôme d'habitat translucide (les colons voient les étoiles)
+      const habitat = new THREE.Mesh(new THREE.SphereGeometry(2.1, 10, 6),
+        mat(0x9fdcff, { emissive: 0x2a6f8f, emissiveIntensity: 0.55, metalness: 0.3, transparent: true, opacity: 0.85 }));
+      habitat.position.set(0.4, 1.6, 0); habitat.scale.y = 0.75;
+      g.add(habitat);
+      g.add(cyl(0.35, 0.35, 3.4, 6, dark, 0.4, 1.2, 0));  // armature du dôme
+      // anneaux structuraux aux couleurs de l'équipe
+      for (const x of [2.2, -0.4, -2.6]) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(2.0, 0.22, 6, 12), accent);
+        ring.rotation.y = Math.PI / 2;
+        ring.position.x = x;
+        g.add(ring);
+      }
+      // nacelles latérales de cryo-fret (couchées le long de la coque)
+      for (const side of [2.4, -2.4]) {
+        const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 4.6, 6), dark);
+        pod.rotation.z = Math.PI / 2;
+        pod.position.set(-0.6, -0.4, side);
+        g.add(pod);
+        const podCap = new THREE.Mesh(new THREE.SphereGeometry(0.8, 6, 4), accent);
+        podCap.position.set(1.7, -0.4, side);
+        g.add(podCap);
+      }
+      // bloc moteur évasé
+      g.add(cyl(1.3, 1.9, 1.6, 8, dark, -4.1, 0, 0));
+      g.add(engineFlame(0x7adfff, -5.3, 0, 1.15));
+      g.add(engineFlame(0x7adfff, -4.9, 2.4, 0.6));
+      g.add(engineFlame(0x7adfff, -4.9, -2.4, 0.6));
       break;
     }
     case 'raider': {
@@ -235,6 +262,26 @@ export function buildStructure(stype: StructType, teamColor: number): THREE.Grou
       g.add(drill);
       g.add(box(2, 4, 2, accent, 0, 4, 0));
       g.add(box(7, 0.6, 1.4, dark, 0, 2, 0));
+      break;
+    }
+    case 'labo': {
+      // dôme de recherche + bobines tesla
+      g.add(cyl(6, 7.5, 3.5, 8, mid));
+      const dome2 = new THREE.Mesh(new THREE.SphereGeometry(4.6, 10, 6),
+        mat(0x9fdcff, { emissive: 0x3a5f9f, emissiveIntensity: 0.5, transparent: true, opacity: 0.85 }));
+      dome2.position.y = 3; dome2.scale.y = 0.75;
+      g.add(dome2);
+      for (let i = 0; i < 3; i++) {
+        const a2 = (i / 3) * Math.PI * 2;
+        const coil = cyl(0.5, 0.7, 6, 6, dark, Math.cos(a2) * 5.5, 3, Math.sin(a2) * 5.5);
+        g.add(coil);
+        const tip = new THREE.Mesh(new THREE.SphereGeometry(1, 6, 4),
+          mat(0xc86bff, { emissive: 0xc86bff, emissiveIntensity: 1.6 }));
+        tip.position.set(Math.cos(a2) * 5.5, 6.4, Math.sin(a2) * 5.5);
+        tip.name = i === 0 ? 'blink' : '';
+        g.add(tip);
+      }
+      g.add(box(2, 1.4, 2, accent, 0, 0.5, 6.5));
       break;
     }
     case 'satellite': {
@@ -355,6 +402,29 @@ export function buildCloud(radius: number, seed: number): THREE.Group {
   return g;
 }
 
+/** Nuage électrique : amas violet crépitant. */
+export function buildStorm(radius: number, seed: number): THREE.Group {
+  const g = new THREE.Group();
+  const rand = (i: number) => { const x = Math.sin(seed * 47.3 + i * 23.1) * 9173.3; return x - Math.floor(x); };
+  const m = new THREE.MeshStandardMaterial({
+    color: 0x5a3a8a, emissive: 0x7a3aff, emissiveIntensity: 0.4,
+    transparent: true, opacity: 0.2, flatShading: true, depthWrite: false,
+  });
+  for (let i = 0; i < 7; i++) {
+    const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * (0.3 + rand(i) * 0.45), 0), i === 0 ? m : m.clone());
+    const a2 = rand(i + 10) * Math.PI * 2;
+    blob.position.set(Math.cos(a2) * radius * 0.55 * rand(i + 5), (rand(i + 30) - 0.5) * 10, Math.sin(a2) * radius * 0.55 * rand(i + 5));
+    if (i === 0) blob.name = 'core';
+    g.add(blob);
+  }
+  // cœur lumineux qui crépite (animé par le rendu)
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * 0.25, 0),
+    new THREE.MeshBasicMaterial({ color: 0xc86bff, transparent: true, opacity: 0.7 }));
+  core.name = 'spark';
+  g.add(core);
+  return g;
+}
+
 export function buildWreck(radius: number): THREE.Group {
   const g = new THREE.Group();
   const m = mat(0x3a4048, { metalness: 0.5 });
@@ -439,24 +509,34 @@ export function buildStarBody(starType: StarType, radius: number, color: number)
   corona.name = 'corona';
   g.add(corona);
   if (starType === 'neutron') {
-    // pulsar : faisceaux jumeaux inclinés qui balaient l'espace (rotation dans le rendu)
-    const beams = new THREE.Group();
-    beams.name = 'beams';
-    const beamM = new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
-    const b1 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 16, 8, 1, true), beamM);
-    b1.position.y = radius * 8; b1.rotation.x = Math.PI;
-    const b2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 16, 8, 1, true), beamM);
-    b2.position.y = -radius * 8;
-    beams.add(b1, b2);
-    beams.rotation.z = 0.5;   // axe magnétique désaxé
-    g.add(beams);
-    // disque de plasma équatorial
+    // pulsar apaisé : cœur éclatant, halo, et une longue traînée de plasma FIXE
+    const halo = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(radius * 1.6, 2),
+      new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.18, depthWrite: false }),
+    );
+    halo.name = 'corona';
+    g.add(halo);
+    // traînée : plume effilée dans une direction unique (comme une comète)
+    const trailM = new THREE.MeshBasicMaterial({
+      color: 0x9fdcff, transparent: true, opacity: 0.3,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const trail = new THREE.Mesh(new THREE.ConeGeometry(radius * 1.4, radius * 14, 10, 1, true), trailM);
+    trail.rotation.z = Math.PI / 2;              // pointe vers -X, épaisse près de l'étoile
+    trail.position.x = -radius * 7.6;
+    trail.name = 'trail';
+    g.add(trail);
+    const trail2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 20, 8, 1, true), trailM.clone());
+    (trail2.material as THREE.MeshBasicMaterial).opacity = 0.16;
+    trail2.rotation.z = Math.PI / 2;
+    trail2.position.x = -radius * 10.4;
+    g.add(trail2);
+    // fin anneau équatorial statique
     const pdisk = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 1.6, radius * 3.4, 48),
-      new THREE.MeshBasicMaterial({ color: 0x7adfff, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+      new THREE.RingGeometry(radius * 1.9, radius * 2.15, 48),
+      new THREE.MeshBasicMaterial({ color: 0x7adfff, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
     );
     pdisk.rotation.x = -Math.PI / 2;
-    pdisk.name = 'disk';
     g.add(pdisk);
   }
   return g;

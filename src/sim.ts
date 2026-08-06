@@ -1,6 +1,6 @@
 // ============ COBALT SECTOR — simulation (physique, combat, économie, événements) ============
 import {
-  GameState, Ship, Structure, Planet, V2, v2, add, sub, scale, len, dist, norm, angleOf,
+  GameState, Ship, Structure, Planet, StormCloud, Stance, PlanFilter, V2, v2, add, sub, scale, len, dist, norm, angleOf,
   fromAngle, clamp, turnToward, IDLE, PIRATE_TEAM, NO_TEAM, WORLD_R, addLog, setAlert,
   shipById, structById, planetById, GadgetId, MineType, WeaponId, ShipClassId, StructType, Res,
   areAllied, allyKey,
@@ -12,6 +12,7 @@ import {
   HULL_REGEN_DELAY, HULL_REGEN_RATE, SHIELD_RECHARGE_RATE, ENERGY_REGEN,
   SALVAGE_RANGE, DOCK_RANGE, MINING_RANGE, MINING_RATE, DIFF_MULT, MINE_RESTOCK_PRICE,
   UPGRADES, STATION_UPGRADE_PRICE, PIRATE_RAID_PERIOD,
+  LABO_INCOME, LABO_INCOME_PERIOD, GUARD_COST, GUARD_COMP,
 } from './data';
 import {
   makeShip, makeStructure, makeWreck, makeProjectile, makeMineEnt, applyUpgrades, speedMult,
@@ -23,6 +24,22 @@ import { PERSONAS } from './data';
 import { thinkTeams, thinkPirates, spawnPirateRaid } from './ai';
 
 const DRAG = 1.1;
+
+/** Doctrine de tir du vaisseau : celle de sa flotte, sinon « feu à volonté ». */
+function stanceOf(gs: GameState, s: Ship): Stance {
+  if (s.fleetId != null) {
+    const f = gs.fleets.find(f => f.id === s.fleetId);
+    if (f) return f.stance;
+  }
+  return 'feu';
+}
+/** Peut-il engager de lui-même ? (paix : jamais ; défense : seulement si attaqué récemment) */
+function mayEngage(gs: GameState, s: Ship): boolean {
+  const st = stanceOf(gs, s);
+  if (st === 'paix') return false;
+  if (st === 'defense') return gs.t - s.lastDmgT < 6;
+  return true;
+}
 
 // ================================================================
 //  TICK PRINCIPAL
@@ -51,6 +68,7 @@ export function simTick(gs: GameState, dt: number) {
   });
 
   updateStarBodies(gs, dt);
+  updateStorms(gs, dt);
   updateFleetMissions(gs, dt);
   thinkTeams(gs, dt);
   thinkPirates(gs, dt);
@@ -77,11 +95,83 @@ export function simTick(gs: GameState, dt: number) {
 // ================================================================
 function updateStarBodies(gs: GameState, dt: number) {
   const bodies = gs.map.bodies;
+  // système triple : une primaire fixe + un couple binaire serré qui orbite autour d'elle
+  if (gs.map.starType === 'triple' && bodies.length === 3) {
+    const [a2, b2, c2] = bodies;
+    a2.pos.x = 0; a2.pos.y = 0;
+    b2.phase += 0.1 * dt;               // orbite lente du couple
+    c2.phase += 0.55 * dt;              // valse rapide du couple sur lui-même
+    const bx = Math.cos(b2.phase) * 230, by = Math.sin(b2.phase) * 230;
+    const off = 52;
+    b2.pos.x = bx + Math.cos(c2.phase) * off; b2.pos.y = by + Math.sin(c2.phase) * off;
+    c2.pos.x = bx - Math.cos(c2.phase) * off; c2.pos.y = by - Math.sin(c2.phase) * off;
+    return;
+  }
   for (const b of bodies) {
     if (b.orbitR > 0) {
       b.phase += b.orbitSpeed * dt;
       b.pos.x = Math.cos(b.phase) * b.orbitR;
       b.pos.y = Math.sin(b.phase) * b.orbitR;
+    }
+  }
+}
+
+// ================================================================
+//  NUAGES ÉLECTRIQUES — apparaissent en cours de partie, lâchent des orages
+// ================================================================
+function updateStorms(gs: GameState, dt: number) {
+  gs.stormT -= dt;
+  if (gs.stormT <= 0 && gs.storms.filter(st => st.alive).length < 3) {
+    gs.stormT = 90 + gs.rng() * 90;
+    const pos = fromAngle(gs.rng() * Math.PI * 2, WORLD_R * (0.35 + gs.rng() * 0.5));
+    const storm: StormCloud = {
+      id: gs.nextId++, kind: 'storm',
+      pos, vel: fromAngle(gs.rng() * Math.PI * 2, 1.6),
+      radius: 70 + gs.rng() * 40,
+      boltT: 4 + gs.rng() * 6,
+      alive: true,
+    };
+    gs.storms.push(storm);
+    addLog(gs, '⚡ Un nuage électrique s\'est formé — zone à laboratoires (et à orages).', '#c86bff');
+    setAlert(gs, 'NUAGE ÉLECTRIQUE DÉTECTÉ', 4);
+  }
+
+  for (const st of gs.storms) {
+    if (!st.alive) continue;
+    // dérive lente, rebond sur la bordure du monde
+    st.pos = add(st.pos, scale(st.vel, dt));
+    if (len(st.pos) > WORLD_R * 0.92) st.vel = scale(norm(st.pos), -1.6);
+
+    st.boltT -= dt;
+    if (st.boltT <= 0) {
+      st.boltT = 5 + gs.rng() * 8;
+      // éclair : direction aléatoire, frappe le premier vaisseau/structure du couloir
+      const ang = gs.rng() * Math.PI * 2;
+      const from = add(st.pos, fromAngle(ang, st.radius * 0.4));
+      const range = 240;
+      const dir = fromAngle(ang);
+      let hitPos = add(from, scale(dir, range));
+      let victim: Ship | Structure | null = null;
+      let bd = range;
+      const test = (e: Ship | Structure) => {
+        const to = sub(e.pos, from);
+        const along = to.x * dir.x + to.y * dir.y;
+        if (along < 0 || along > range) return;
+        const lat = Math.abs(to.x * dir.y - to.y * dir.x);
+        if (lat < e.radius + 10 && along < bd) { bd = along; victim = e; }
+      };
+      for (const sh of gs.ships) if (sh.alive) test(sh);
+      for (const su of gs.structures) if (su.alive) test(su);
+      if (victim) {
+        const v = victim as Ship | Structure;
+        hitPos = { ...v.pos };
+        v.shield = 0;                                // l'orage grille tout le bouclier…
+        if (v.kind === 'ship') v.energy = v.energyMax;   // …mais recharge l'énergie à bloc
+        if (v.kind === 'ship' && v.team === gs.playerTeam && v.id === gs.playerShipId) {
+          addLog(gs, '⚡ Foudroyé : bouclier grillé, énergie rechargée à 100 %.', '#c86bff');
+        }
+      }
+      gs.fx.push({ type: 'eclair', pos: { ...from }, pos2: hitPos, color: 0xc86bff });
     }
   }
 }
@@ -292,7 +382,7 @@ function execOrder(gs: GameState, s: Ship, dt: number) {
     }
     case 'guard': {
       const home = o.pos ?? s.pos;
-      const foe = findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.8);
+      const foe = mayEngage(gs, s) ? findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.8) : null;
       if (foe && SHIP_CLASSES[s.cls].power > 3 && dist(home, foe.pos) < 320) {
         combatApproach(gs, s, foe.pos, foePriority(foe), dt);
       } else {
@@ -317,8 +407,8 @@ function execOrder(gs: GameState, s: Ship, dt: number) {
         combatApproach(gs, s, leadTarget.pos, leadTarget, dt);
         break;
       }
-      // une escorte attaquée se défend sans quitter la flotte
-      if (SHIP_CLASSES[s.cls].power > 3 && gs.t - s.lastDmgT < 4) {
+      // une escorte attaquée se défend sans quitter la flotte (sauf doctrine pacifique)
+      if (SHIP_CLASSES[s.cls].power > 3 && gs.t - s.lastDmgT < 4 && stanceOf(gs, s) !== 'paix') {
         const foe = findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.8);
         if (foe) { combatApproach(gs, s, foe.pos, foe, dt); break; }
       }
@@ -351,11 +441,25 @@ function execOrder(gs: GameState, s: Ship, dt: number) {
       if (!o.pos || arrive(gs, s, o.pos, dt, 30)) s.order = { ...IDLE };
       break;
     }
+    case 'orbit': {
+      const body = structById(gs, o.targetId ?? -1) ?? planetById(gs, o.targetId ?? -1);
+      if (!body) { s.order = { kind: 'guard', pos: { ...s.pos } }; break; }
+      // un ennemi rôde ? la garde intercepte, puis reprend sa ronde d'elle-même
+      if (mayEngage(gs, s)) {
+        const foe = findFoeNear(gs, s, body.pos, 260);
+        if (foe) { combatApproach(gs, s, foe.pos, foe, dt); break; }
+      }
+      const ringR = body.radius + 36;
+      const slot = fromAngle(s.avoidSeed + gs.t * 0.35, ringR);
+      moveToward(gs, s, add(body.pos, slot), dt, 4);
+      break;
+    }
   }
 
-  // riposte automatique des vaisseaux armés inactifs (les pirates ont leur propre IA)
+  // attaque à vue des vaisseaux armés inactifs, selon leur doctrine
   if (s.team !== PIRATE_TEAM) {
-    if ((o.kind === 'idle' || o.kind === 'move' || o.kind === 'dock') && SHIP_CLASSES[s.cls].power > 3 && s.aiCd <= 0) {
+    if ((o.kind === 'idle' || o.kind === 'move' || o.kind === 'dock') && SHIP_CLASSES[s.cls].power > 3
+        && s.aiCd <= 0 && mayEngage(gs, s)) {
       const foe = findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.7);
       if (foe) s.order = { kind: 'attack', targetId: foe.id };
       s.aiCd = 0.6;
@@ -652,7 +756,11 @@ export function fireShipWeapon(gs: GameState, s: Ship, slot: number, aim: V2, ta
     if (target) {
       const hitPos = { ...target.pos };
       dealHit(gs, target, w.dmg, s.team, w.id);
-      if (target.kind === 'ship' && w.slowFactor) target.stasisT = Math.max(target.stasisT, w.slowDur ?? 1.5);
+      if (target.kind === 'ship' && w.slowFactor) {
+        target.stasisT = Math.max(target.stasisT, w.slowDur ?? 1.5);
+        target.energy = Math.max(0, target.energy - 16);   // la stase draine l'énergie
+        gs.fx.push({ type: 'stase_fx', pos: { ...target.pos }, size: target.radius + 4 });
+      }
       gs.fx.push({ type: 'beam', pos: { ...from }, pos2: hitPos, color: w.color, wid: w.id });
     } else {
       gs.fx.push({ type: 'beam', pos: { ...from }, pos2: add(s.pos, scale(dir, w.range)), color: w.color, wid: w.id });
@@ -919,6 +1027,11 @@ function updateStructures(gs: GameState, dt: number) {
       st.incomeT = 0;
       const nearRoid = gs.roids.some(r => r.alive && dist(r.pos, st.pos) < 150);
       if (nearRoid) team.credits += Math.round(MINE_INCOME * mult);
+    }
+    if (st.stype === 'labo' && st.incomeT >= LABO_INCOME_PERIOD) {
+      st.incomeT = 0;
+      const inStorm = gs.storms.some(sc => sc.alive && dist(sc.pos, st.pos) < sc.radius);
+      if (inStorm) team.credits += Math.round(LABO_INCOME * mult);
     }
   }
 }
@@ -1277,10 +1390,17 @@ export function canPlaceStructure(gs: GameState, teamId: number, stype: StructTy
   if (!team) return 'Équipe invalide';
   const def = STRUCTS[stype];
   if (team.credits < def.prix) return 'Crédits insuffisants';
-  // dans le territoire : à portée d'une structure existante
-  const near = gs.structures.some(st => st.alive && st.team === teamId &&
-    dist(st.pos, pos) < (st.stype === 'station' ? 420 : 300));
-  if (!near) return 'Trop loin de votre territoire';
+  // le laboratoire se bâtit DANS un nuage électrique, où qu'il soit
+  if (stype === 'labo') {
+    if (!gs.storms.some(sc => sc.alive && dist(sc.pos, pos) < sc.radius)) {
+      return 'Doit être bâti dans un nuage électrique';
+    }
+  } else {
+    // dans le territoire : à portée d'une structure existante
+    const near = gs.structures.some(st => st.alive && st.team === teamId &&
+      dist(st.pos, pos) < (st.stype === 'station' ? 420 : 300));
+    if (!near) return 'Trop loin de votre territoire';
+  }
   for (const st of gs.structures) if (st.alive && dist(st.pos, pos) < st.radius + def.radius + 18) return 'Trop proche d\'une structure';
   for (const p of gs.planets) if (p.alive && dist(p.pos, pos) < p.radius + def.radius + 10) return 'Trop proche d\'une planète';
   for (const b of gs.map.bodies) if (dist(b.pos, pos) < gs.map.killRadius + 40) return 'Trop proche de l\'étoile';
@@ -1408,7 +1528,7 @@ export function takeControlNearest(gs: GameState): string | null {
 function updateFleetMissions(gs: GameState, dt: number) {
   for (const f of gs.fleets) {
     const kind = f.mission.kind;
-    if (kind !== 'mine_auto' && kind !== 'patrol_in' && kind !== 'patrol_border' && kind !== 'patrol_out') continue;
+    if (!['mine_auto', 'patrol_in', 'patrol_border', 'patrol_out', 'protect', 'trade_auto', 'patrol_civil', 'plan'].includes(kind)) continue;
     const ships = fleetShips(gs, f);
     if (ships.length === 0) continue;
     const team = gs.teams[f.team];
@@ -1454,22 +1574,129 @@ function updateFleetMissions(gs: GameState, dt: number) {
       continue;
     }
 
-    // Patrouilles : le chef enchaîne des points de passage, les membres suivent
+    // ---- protection de l'amiral ----
+    if (kind === 'protect') {
+      const flag = gs.ships.find(x => x.alive && x.team === f.team && x.isFlagship);
+      if (!flag) continue;
+      for (const x of ships) {
+        if (x.order.kind === 'attack') continue;
+        if (x.order.kind !== 'escort' || x.order.targetId !== flag.id) {
+          x.order = { kind: 'escort', targetId: flag.id };
+        }
+      }
+      continue;
+    }
+
+    // ---- commerce auto : les cargos tracent la route, les armés les escortent ----
+    if (kind === 'trade_auto') {
+      const traders = ships.filter(x => SHIP_CLASSES[x.cls].civil);
+      const guards = ships.filter(x => !SHIP_CLASSES[x.cls].civil);
+      for (const c of traders) {
+        if (c.order.kind !== 'trade') { c.order = { kind: 'trade' }; c.tradePhase = 0; }
+      }
+      guards.forEach((g, i) => {
+        if (g.order.kind === 'attack') return;
+        const ward = traders[i % Math.max(1, traders.length)];
+        if (ward && (g.order.kind !== 'escort' || g.order.targetId !== ward.id)) {
+          g.order = { kind: 'escort', targetId: ward.id };
+        } else if (!ward && g.order.kind === 'idle') {
+          g.order = { kind: 'guard', pos: { ...home } };
+        }
+      });
+      continue;
+    }
+
+    // ---- patrouille civile : escorte les civils les plus en danger ----
+    if (kind === 'patrol_civil') {
+      f.patrolAngle += dt;
+      if (f.patrolAngle < 3 && ships.some(x => x.order.kind === 'escort')) continue; // réévalue ~3 s
+      f.patrolAngle = 0;
+      const civils = gs.ships.filter(x => x.alive && x.team === f.team && SHIP_CLASSES[x.cls].civil);
+      if (civils.length === 0) {
+        for (const g of ships) if (g.order.kind === 'idle') g.order = { kind: 'guard', pos: { ...home } };
+        continue;
+      }
+      // danger : proximité de menaces ennemies + absence de couverture armée
+      const threats = [
+        ...gs.ships.filter(x => x.alive && isEnemy(f.team, x.team) && SHIP_CLASSES[x.cls].power > 3),
+        ...gs.structures.filter(x => x.alive && isEnemy(f.team, x.team) && STRUCTS[x.stype].weaponDmg > 0),
+      ];
+      const scored = civils.map(c => {
+        let nearThreat = Infinity;
+        for (const t2 of threats) nearThreat = Math.min(nearThreat, dist(t2.pos, c.pos));
+        const covered = gs.ships.some(g2 => g2.alive && g2.team === f.team
+          && SHIP_CLASSES[g2.cls].power > 3 && !ships.includes(g2) && dist(g2.pos, c.pos) < 160);
+        const danger = Math.max(0, 700 - Math.min(nearThreat, 700)) + (covered ? 0 : 260);
+        return { c, danger };
+      }).sort((x, y) => y.danger - x.danger);
+      ships.forEach((g, i) => {
+        if (g.order.kind === 'attack') return;
+        const ward = scored[i % scored.length].c;
+        if (g.order.kind !== 'escort' || g.order.targetId !== ward.id) {
+          g.order = { kind: 'escort', targetId: ward.id };
+        }
+      });
+      continue;
+    }
+
+    // ---- plan d'attaque : tenir la position, puis avancer sur l'objectif ----
+    if (kind === 'plan') {
+      const lead = shipById(gs, f.leaderId);
+      if (!lead) continue;
+      const staging = f.mission.pos;
+      if (!gs.plan.armed || !gs.plan.objective) {
+        // phase de mise en place : rejoindre la position et tenir la formation
+        if (staging && dist(lead.pos, staging) > 30) {
+          if (lead.order.kind !== 'move') lead.order = { kind: 'move', pos: { ...staging } };
+        } else if (lead.order.kind === 'move' || lead.order.kind === 'idle') {
+          lead.order = { kind: 'guard', pos: staging ? { ...staging } : { ...lead.pos } };
+        }
+      } else {
+        // exécution : avancer vers l'objectif en engageant les cibles autorisées
+        const targetId = planPickTarget(gs, f.team, lead.pos, gs.plan.filter);
+        if (targetId != null) {
+          if (lead.order.kind !== 'attack' || lead.order.targetId !== targetId) {
+            lead.order = { kind: 'attack', targetId };
+          }
+        } else if (dist(lead.pos, gs.plan.objective) > 60) {
+          if (lead.order.kind !== 'move') lead.order = { kind: 'move', pos: { ...gs.plan.objective } };
+        } else if (lead.order.kind !== 'guard') {
+          lead.order = { kind: 'guard', pos: { ...gs.plan.objective } };
+        }
+      }
+      for (const id of f.members) {
+        const mm = shipById(gs, id);
+        if (mm && mm.order.kind !== 'attack' && (mm.order.kind !== 'escort' || mm.order.targetId !== lead.id)) {
+          mm.order = { kind: 'escort', targetId: lead.id };
+        }
+      }
+      continue;
+    }
+
+    // ---- patrouilles territoriales : couvrent TOUTES vos possessions ----
     const lead = shipById(gs, f.leaderId);
     if (!lead) continue;
     if (lead.order.kind !== 'move' && lead.order.kind !== 'attack') {
-      f.patrolAngle += 0.9 + gs.rng() * 0.6;
+      // possessions : station, avant-postes, mines, labos, satellites, colonies
+      const holdings: { pos: V2; r: number }[] = [
+        ...gs.structures.filter(st => st.alive && st.team === f.team)
+          .map(st => ({ pos: st.pos, r: st.stype === 'station' ? 340 : st.stype === 'avantposte' ? 260 : 160 })),
+        ...gs.planets.filter(pl => pl.alive && pl.owner === f.team)
+          .map(pl => ({ pos: pl.pos, r: 200 })),
+      ];
+      if (holdings.length === 0) continue;
+      f.patrolAngle += 1;
+      const h = holdings[Math.floor(f.patrolAngle) % holdings.length];
       let wp: V2;
       if (kind === 'patrol_border') {
-        wp = add(home, fromAngle(f.patrolAngle, 330 + gs.rng() * 60));
+        wp = add(h.pos, fromAngle(f.patrolAngle * 0.9 + gs.rng(), h.r + 30));
       } else if (kind === 'patrol_out') {
-        wp = add(home, fromAngle(f.patrolAngle, 550 + gs.rng() * 350));
+        // au large : entre la possession et l'espace ennemi le plus proche
+        const foeSt = nearestStruct(gs, h.pos, x => isEnemy(f.team, x.team), Infinity);
+        const dirOut = foeSt ? norm(sub(foeSt.pos, h.pos)) : norm(h.pos);
+        wp = add(h.pos, add(scale(dirOut, h.r + 220), fromAngle(gs.rng() * Math.PI * 2, 80)));
       } else {
-        const spots: V2[] = [home,
-          ...gs.structures.filter(st => st.alive && st.team === f.team).map(st => st.pos),
-          ...gs.planets.filter(pl => pl.alive && pl.owner === f.team).map(pl => pl.pos)];
-        const spot = spots[Math.floor(gs.rng() * spots.length)] ?? home;
-        wp = add(spot, fromAngle(gs.rng() * Math.PI * 2, 40 + gs.rng() * 90));
+        wp = add(h.pos, fromAngle(gs.rng() * Math.PI * 2, 30 + gs.rng() * h.r * 0.5));
       }
       const dW = len(wp);
       if (dW > WORLD_R * 0.98) wp = scale(wp, WORLD_R * 0.98 / dW);
@@ -1482,6 +1709,64 @@ function updateFleetMissions(gs: GameState, dt: number) {
       }
     }
   }
+}
+
+/** Cible autorisée par le plan la plus proche de `pos` (rayon d'engagement 300). */
+function planPickTarget(gs: GameState, team: number, pos: V2, filter: PlanFilter): number | null {
+  let best: number | null = null, bd = 300;
+  const consider = (id: number, p2: V2) => {
+    const d = dist(p2, pos);
+    if (d < bd) { bd = d; best = id; }
+  };
+  if (filter === 'tout' || filter === 'armes') {
+    for (const sh of gs.ships) {
+      if (!sh.alive || !isEnemy(team, sh.team)) continue;
+      if (filter === 'armes' && SHIP_CLASSES[sh.cls].civil) continue;
+      if (!canDetect(gs, team, sh)) continue;
+      consider(sh.id, sh.pos);
+    }
+  }
+  if (filter !== 'armes') {
+    for (const st of gs.structures) {
+      if (!st.alive || !isEnemy(team, st.team)) continue;
+      if (filter === 'stations' && st.stype !== 'station') continue;
+      consider(st.id, st.pos);
+    }
+    if (filter === 'tout' || filter === 'structures') {
+      for (const pl of gs.planets) {
+        if (!pl.alive || pl.owner < 0 || !isEnemy(team, pl.owner)) continue;
+        consider(pl.id, pl.pos);
+      }
+    }
+  }
+  return best;
+}
+
+// ================================================================
+//  GARDES ORBITALES — achetées en vue tactique sur un corps possédé
+// ================================================================
+export function buyGuards(gs: GameState, teamId: number, targetId: number): string | null {
+  const team = gs.teams[teamId];
+  if (!team) return 'Équipe invalide';
+  const body = structById(gs, targetId) ?? planetById(gs, targetId);
+  if (!body) return 'Corps introuvable';
+  const owner = body.kind === 'planet' ? body.owner : body.team;
+  if (owner !== teamId) return 'Ce corps ne vous appartient pas';
+  const station = structById(gs, team.stationId);
+  if (!station) return 'Station détruite';
+  const cost = GUARD_COST[station.level] ?? GUARD_COST[1];
+  if (team.credits < cost) return 'Crédits insuffisants';
+  team.credits -= cost;
+  const comp = GUARD_COMP[station.level] ?? GUARD_COMP[1];
+  comp.forEach((cls, i) => {
+    const pos = add(body.pos, fromAngle((i / comp.length) * Math.PI * 2, body.radius + 36));
+    const guard = makeShip(gs, teamId, cls, pos);
+    guard.avoidSeed = (i / comp.length) * Math.PI * 2;
+    guard.order = { kind: 'orbit', targetId: body.id };
+    gs.fx.push({ type: 'saut', pos: { ...pos } });
+  });
+  addLog(gs, `Garde orbitale déployée (${comp.length} vaisseaux).`, team.cssColor);
+  return null;
 }
 
 // ================================================================

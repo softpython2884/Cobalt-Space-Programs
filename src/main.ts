@@ -1,15 +1,15 @@
 // ============ COBALT SECTOR — point d'entrée & boucle de jeu ============
 import {
   GameState, MatchConfig, SIM_DT, V2, dist, clamp, StructType, GadgetId,
-  structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind,
+  structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind, PlanFilter, Stance,
 } from './core';
-import { SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS } from './data';
+import { SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST } from './data';
 import { newGame } from './world';
 import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
-  proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer,
+  proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
 } from './sim';
 import { setFleetMission } from './orders';
 import { canDetect } from './entities';
@@ -36,6 +36,8 @@ let lockTickT = 0;
 let missileWarnT = 0;
 let lockWarnT = 0;
 let prevNova = -1;
+let planMode: 'off' | 'staging' | 'objective' = 'off';
+let sirenT = 0;
 
 window.addEventListener('resize', () => renderer?.resize());
 // l'audio ne peut démarrer qu'après un geste utilisateur
@@ -67,6 +69,8 @@ function startGame(cfg: MatchConfig) {
   accumulator = 0;
   lockWasReady = false;
   prevNova = -1;
+  planMode = 'off';
+  sirenT = 0;
   input.endFrame();
   if (!renderer) renderer = new Renderer3D(canvas);
   else renderer.reset();
@@ -87,6 +91,7 @@ function handleInput(dt: number) {
   // ---------- Échap ----------
   if (input.pressed('Escape')) {
     if (hud.ctxOpen) hud.closeCtxMenu();
+    else if (planMode !== 'off') { planMode = 'off'; }
     else if (buildMode) { buildMode = null; }
     else if (hud.buildOpen || hud.shopOpen || hud.diploOpen) hud.closePanels();
     else { paused = !paused; hud.showPause(paused); }
@@ -208,6 +213,42 @@ function handleInput(dt: number) {
   }
   if (input.pressed('KeyB')) hud.toggleBuild(gs);
   if (input.pressed('KeyJ')) hud.toggleDiplo(gs);
+  // la boutique se ferme toute seule quand on s'éloigne de la station
+  if (hud.shopOpen && ship) {
+    const st = structById(gs, gs.teams[gs.playerTeam].stationId);
+    if (!st || dist(ship.pos, st.pos) > DOCK_RANGE * 2.2) hud.closePanels();
+  }
+
+  // ---------- Sélection par type (T : filtre cyclique ; en tactique, double-clic = même classe) ----------
+  if (input.pressed('KeyT') && gs.selection.length > 0) {
+    const g3 = gs;
+    const classes = [...new Set(g3.selection
+      .map(id => shipById(g3, id)?.cls)
+      .filter((c): c is NonNullable<typeof c> => !!c))];
+    if (classes.length > 1) {
+      const first = classes[0];
+      g3.selection = g3.selection.filter(id => shipById(g3, id)?.cls === first);
+      hud.flashHint(`Sélection : ${SHIP_CLASSES[first].nom} uniquement (T pour cycler).`);
+      sfx.ui();
+    } else if (classes.length === 1) {
+      // recycle : re-sélectionne tous les vaisseaux du même type à l'écran
+      const cls = classes[0];
+      gs.selection = gs.ships.filter(s2 => s2.alive && s2.team === gs!.playerTeam && s2.cls === cls).map(s2 => s2.id);
+      hud.flashHint(`Tous vos ${SHIP_CLASSES[cls].nom}s sélectionnés.`);
+      sfx.ui();
+    }
+  }
+
+  // ---------- Mode plan (P) ----------
+  if (input.pressed('KeyP')) {
+    planMode = planMode === 'off' ? 'staging' : 'off';
+    sfx.ui();
+  }
+  if (input.pressed('Enter') && gs.plan.objective) {
+    gs.plan.armed = true;
+    hud.flashHint('PLAN EXÉCUTÉ — toutes les flottes avancent sur l\'objectif.');
+    sfx.buy();
+  }
   if (input.pressed('KeyU')) {
     const st = structById(gs, gs.teams[gs.playerTeam].stationId);
     if (ship && st && dist(ship.pos, st.pos) < DOCK_RANGE * 1.8) hud.toggleShop(gs);
@@ -270,8 +311,40 @@ function handleInput(dt: number) {
     }
   }
 
-  // ---------- Clic droit : ordres contextuels ----------
+  // ---------- Clic droit : plan (positions/objectif) ou ordres contextuels ----------
   for (const c of input.rightClicks) {
+    if (planMode !== 'off') {
+      const pos = renderer.worldFromScreen(c.x, c.y);
+      if (planMode === 'objective') {
+        gs.plan.objective = pos;
+        gs.plan.armed = false;
+        planMode = 'staging';
+        hud.flashHint('Objectif défini — ENTRÉE pour lancer l\'assaut.');
+        sfx.buy();
+      } else {
+        // position de mise en place pour les flottes ARMÉES sélectionnées
+        const fleets = new Set<number>();
+        for (const id of gs.selection) {
+          const sh = shipById(gs, id);
+          if (sh?.fleetId != null) {
+            const f = gs.fleets.find(f2 => f2.id === sh.fleetId);
+            if (f && f.team === gs.playerTeam
+              && fleetShips(gs, f).some(x => SHIP_CLASSES[x.cls].power > 3)) fleets.add(f.id);
+          }
+        }
+        if (fleets.size === 0) {
+          hud.flashHint('Sélectionnez une flotte ARMÉE pour lui donner une position de plan.');
+          sfx.error();
+        } else {
+          for (const fid of fleets) {
+            const f = gs.fleets.find(f2 => f2.id === fid)!;
+            setFleetMission(gs, f, { kind: 'plan', pos: { ...pos } });
+          }
+          sfx.ui();
+        }
+      }
+      continue;
+    }
     openOrderMenu(c.x, c.y);
   }
 
@@ -437,13 +510,28 @@ function openOrderMenu(sx: number, sy: number) {
     items.push({ label: '➤ Déplacer ici', cb: () => issueOrder(gs!, orderables, { kind: 'move', pos }) });
     items.push({ label: '⚓ Garder la position', cb: () => issueOrder(gs!, orderables, { kind: 'guard', pos }) });
     items.push({ label: '🏠 Retour à la station', cb: () => issueOrder(gs!, orderables, { kind: 'dock' }) });
-  } else if (pickedPlanet) {
+  }
+  // recruter une garde orbitale sur un corps qui nous appartient
+  const guardable = (pickedStruct && pickedStruct.team === gs.playerTeam)
+    ? pickedStruct
+    : (pickedPlanet && pickedPlanet.owner === gs.playerTeam) ? pickedPlanet : null;
+  if (guardable) {
+    const st = structById(gs, gs.teams[gs.playerTeam].stationId);
+    const cost = GUARD_COST[st?.level ?? 1];
+    items.push({
+      label: `🛡 Recruter une garde orbitale (${cost} ⬡)`,
+      cb: () => {
+        const err = buyGuards(gs!, gs!.playerTeam, guardable.id);
+        if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
+      },
+    });
+  }
+  if (items.length === 0 && pickedPlanet) {
     title = pickedPlanet.name.toUpperCase();
     const ownerTxt = pickedPlanet.owner >= 0 ? `Colonie ${gs.teams[pickedPlanet.owner].name}` : 'Neutre — colonisable (transporteur requis)';
     items.push({ label: ownerTxt, cb: () => {} });
-  } else {
-    return; // rien à proposer
   }
+  if (items.length === 0) return;
   hud.openCtxMenu(sx, sy, title, items);
 }
 
@@ -501,6 +589,20 @@ hud.onDiploFocus = (team, target) => {
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
 };
 hud.onOfferAccept = id => { if (gs) { acceptOffer(gs, id); sfx.buy(); } };
+hud.onStance = stance => {
+  if (!gs) return;
+  let n = 0;
+  for (const id of gs.selection) {
+    const sh = shipById(gs, id);
+    const f = sh?.fleetId != null ? gs.fleets.find(f2 => f2.id === sh.fleetId) : null;
+    if (f && f.team === gs.playerTeam) { f.stance = stance as Stance; n++; }
+  }
+  if (n > 0) { hud.flashHint(`Doctrine appliquée : ${stance === 'feu' ? 'attaque à vue' : stance === 'defense' ? 'défense' : 'ne pas tirer'}.`); sfx.ui(); }
+  else hud.flashHint('Sélectionnez une flotte pour changer sa doctrine.');
+};
+hud.onPlanToggle = () => { planMode = planMode === 'off' ? 'staging' : 'off'; sfx.ui(); };
+hud.onPlanObjective = () => { planMode = 'objective'; sfx.ui(); };
+hud.onPlanFilter = f => { if (gs) { gs.plan.filter = f as PlanFilter; sfx.ui(); } };
 hud.onOfferRefuse = id => { if (gs) { refuseOffer(gs, id); sfx.ui(); } };
 
 function frame(now: number) {
@@ -556,6 +658,32 @@ function frame(now: number) {
     sfx.bigBoom();
   }
   prevNova = gs.supernovaWave;
+
+  // sirène quand VOTRE station est attaquée (au plus toutes les 12 s)
+  sirenT -= elapsed;
+  const myStation = structById(gs, gs.teams[gs.playerTeam].stationId);
+  if (myStation && gs.t - myStation.lastDmgT < 0.5 && sirenT <= 0) {
+    sirenT = 12;
+    sfx.siren();
+    window.setTimeout(() => sfx.siren(), 1100);
+    gs.alertText = '🚨 VOTRE STATION EST ATTAQUÉE';
+    gs.alertT = 4.5;
+  }
+
+  // marqueurs et état du plan (vue tactique)
+  if (renderer.isTactical()) {
+    const stagings = gs.fleets
+      .filter(f => f.team === gs!.playerTeam && f.mission.kind === 'plan' && f.mission.pos)
+      .map(f => f.mission.pos!);
+    renderer.setPlanMarkers(stagings, gs.plan.objective, gs.plan.armed);
+    hud.setPlanUI(planMode, gs.plan.armed,
+      planMode === 'objective' ? 'Clic droit : placer l\'objectif'
+      : planMode === 'staging' ? `Clic droit : position de flotte · ${stagings.length} posée(s) · ENTRÉE : GO`
+      : gs.plan.armed ? 'PLAN EN COURS' : '');
+  } else {
+    renderer.setPlanMarkers([], null, false);
+    hud.setPlanUI(planMode, gs.plan.armed, '');
+  }
 
   const aim = renderer.worldFromScreen(input.mouseX, input.mouseY);
   renderer.update(gs, elapsed, visibleSet, aim);

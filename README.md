@@ -35,6 +35,8 @@ Puis ouvrir http://localhost:5173
 | Molette | Zoom — dézoomer à fond ouvre la **vue tactique** |
 | Double-clic (+ glisser) | Sélection (Ctrl = ajouter ; clic simple suffit en vue tactique) |
 | `J` | Diplomatie : alliances, cibles communes (les IA font aussi des offres) |
+| `T` | Filtrer la sélection par type de vaisseau (re-presser : tous les vaisseaux de ce type) |
+| `P` | Mode plan : clic droit = positions de flottes, 🎯 = objectif, `ENTRÉE` = assaut général |
 | Clic droit | Menu d'ordres : attaquer, miner, escorter, coloniser, commercer… |
 | `Échap` | Fermer les panneaux / pause |
 
@@ -47,6 +49,11 @@ Puis ouvrir http://localhost:5173
   tactique (chef + membres + mission : attaque, escorte, minage auto, patrouilles int./bordure/ext.)
   avec 4 formations — les vaisseaux armés d'une flotte de minage escortent les mineurs.
 - **Diplomatie** : alliances (vision partagée, commerce, cibles communes) — les IA proposent aussi.
+- **Contrôle des troupes** : doctrines de tir (à vue / défense / pacifique), patrouilles dynamiques
+  sur toutes vos possessions, patrouille civile intelligente, gardes orbitales à recruter
+  (clic droit sur un corps possédé), plans d'attaque avec filtre de cibles.
+- **Nuages électriques** (apparaissent en cours de partie) : bâtissez-y des **laboratoires**
+  très rentables — mais leurs orages grillent les boucliers (et rechargent l'énergie).
 - **Station** : 3 niveaux — débloque de nouvelles classes de vaisseaux et des gadgets.
 - **Victoire** : détruisez les stations ennemies. Mort subite à 20 min, fin au score à 28 min.
 - **Systèmes stellaires** : soleils jaune/rouge/bleu/violet (rare, +50 % d'énergie), naine
