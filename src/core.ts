@@ -118,7 +118,8 @@ export interface Structure {
   fireCd: number;
   incomeT: number;
   lastDmgT: number;               // le bouclier ne régénère qu'après 10 s sans dégât
-  pendingCredits: number;         // dépôt : valeur stockée, écoulée à débit limité
+  pendingCredits: number;         // dépôt : valeur stockée (propriétaire), écoulée à débit limité
+  pendingAllied: Record<number, number>;  // dépôt : valeur en attente par équipe alliée
   alive: boolean;
 }
 
@@ -222,6 +223,13 @@ export interface PlanState {
   armed: boolean;         // ENTRÉE pressée : les flottes avancent vers l'objectif
 }
 
+// ---------- Météores (arrivent en feu depuis les bords, minables à l'impact) ----------
+export interface Meteor {
+  id: number; kind: 'meteor';
+  pos: V2; vel: V2; target: V2;
+  alive: boolean;
+}
+
 // ---------- Nuages électriques ----------
 export interface StormCloud {
   id: number; kind: 'storm';
@@ -312,6 +320,8 @@ export interface GameState {
 
   storms: StormCloud[];        // nuages électriques (apparaissent en cours de partie)
   stormT: number;              // prochain spawn de nuage
+  meteors: Meteor[];           // météores en vol
+  meteorT: number;             // prochaine pluie de météores
   plan: PlanState;             // plan d'attaque du joueur
 
   log: { t: number; text: string; color: string }[];

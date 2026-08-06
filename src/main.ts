@@ -39,6 +39,8 @@ let lockWarnT = 0;
 let prevNova = -1;
 let planMode: 'off' | 'staging' | 'objective' = 'off';
 let sirenT = 0;
+let introT = 0;                    // intro hypersaut en cours (>0)
+let introStars: { a: number; r: number; sp: number }[] = [];
 let leftHeldT = 0;                 // durée d'appui du clic gauche
 let pendingShot: { t: number; aim: V2 } | null = null;   // tir de clic bref, différé
 
@@ -54,6 +56,8 @@ hud.onStart = cfg => startGame(cfg);
 hud.onReplay = () => { if (lastCfg) startGame({ ...lastCfg, seed: Math.floor(Math.random() * 1e9) }); };
 hud.onQuitToMenu = () => {
   gs = null; paused = false;
+  introT = 0;
+  document.getElementById('intro')!.classList.add('hidden');
   hud.showMenu();
 };
 hud.onResume = () => { paused = false; hud.showPause(false); };
@@ -80,6 +84,43 @@ function startGame(cfg: MatchConfig) {
   const ship = playerShip(gs);
   if (ship) renderer.camPos = { ...ship.pos };
   renderer.camH = 130;
+
+  // intro hypersaut : étoiles qui défilent, flash, et on surgit à la base
+  introT = 2.6;
+  introStars = Array.from({ length: 260 }, () => ({
+    a: Math.random() * Math.PI * 2,
+    r: 20 + Math.random() * 500,
+    sp: 0.6 + Math.random() * 1.6,
+  }));
+  document.getElementById('intro')!.classList.remove('hidden');
+  sfx.hyper();
+}
+
+/** Une frame de l'animation d'hypersaut (canvas 2D plein écran). */
+function drawIntro(dt: number) {
+  const cv = document.getElementById('introCanvas') as HTMLCanvasElement;
+  if (cv.width !== window.innerWidth) { cv.width = window.innerWidth; cv.height = window.innerHeight; }
+  const ctx = cv.getContext('2d')!;
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  ctx.fillStyle = 'rgba(2,3,10,0.5)';
+  ctx.fillRect(0, 0, W, H);
+  const speed = 1 + (2.6 - introT) * 3;   // accélère au fil du saut
+  for (const st of introStars) {
+    st.r += st.sp * speed * dt * 260;
+    if (st.r > Math.hypot(W, H) * 0.6) { st.r = 10 + Math.random() * 60; st.a = Math.random() * Math.PI * 2; }
+    const x1 = cx + Math.cos(st.a) * st.r;
+    const y1 = cy + Math.sin(st.a) * st.r * 0.85;
+    const tail = Math.min(st.r * 0.35, 24 + speed * 22);
+    const x0 = cx + Math.cos(st.a) * (st.r - tail);
+    const y0 = cy + Math.sin(st.a) * (st.r - tail) * 0.85;
+    const b2 = Math.min(1, st.r / 260);
+    ctx.strokeStyle = `rgba(${180 + b2 * 75}, ${210 + b2 * 45}, 255, ${0.25 + b2 * 0.7})`;
+    ctx.lineWidth = 1 + b2 * 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
 }
 
 // ================================================================
@@ -687,6 +728,21 @@ function frame(now: number) {
   lastTime = now;
 
   if (!gs || !renderer) { input.endFrame(); return; }
+
+  // intro hypersaut : le monde attend la sortie du saut
+  if (introT > 0) {
+    introT -= elapsed;
+    drawIntro(elapsed);
+    if (introT <= 0) {
+      document.getElementById('intro')!.classList.add('hidden');
+      hud.flashScreen();
+      sfx.bigBoom();
+      const ship0 = playerShip(gs);
+      if (ship0) gs.fx.push({ type: 'saut', pos: { ...ship0.pos } });
+    }
+    input.endFrame();
+    return;
+  }
 
   // après la fin de partie, seuls les boutons de l'écran de fin restent actifs
   if (gs.status === 'playing') handleInput(elapsed);

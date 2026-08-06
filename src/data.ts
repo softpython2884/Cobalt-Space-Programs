@@ -155,6 +155,8 @@ export const MINE_INCOME = 30;            // crédits / 12 s si près d'astéro�
 export const LABO_INCOME = 70;            // crédits / 10 s si dans un nuage électrique
 export const LABO_INCOME_PERIOD = 10;
 export const DEPOT_RATE = 3;              // crédits / s max écoulés par un dépôt
+export const DEPOT_CAP = 500;             // valeur en attente max : au-delà, le dépôt est plein
+export const DEPOT_ALLY_BONUS = 0.2;      // le propriétaire touche 20 % des dépôts alliés (sans les leur retirer)
 export const ALLY_TRADE_MULT = 3;         // commerce avec une colonie alliée : x3
 export const ALLIANCE_DURATION = 900;     // 15 min, renouvelable dans les 2 dernières
 export const PLANET_UPGRADE_COST = 150;
@@ -193,7 +195,7 @@ export const GADGETS: Record<GadgetId, GadgetDef> = {
   camouflage: { id: 'camouflage', nom: 'Camouflage', icon: '👻', cd: 45, dur: 8, prix: 400, unlockLevel: 2, desc: 'Invisible 8 s (rompu si vous tirez).' },
   bouclier_orbital: { id: 'bouclier_orbital', nom: 'Bouclier orbital', icon: '🛡', cd: 60, dur: 6, prix: 500, unlockLevel: 2, desc: 'Invulnérable 6 s.' },
   frappe: { id: 'frappe', nom: 'Frappe orbitale', icon: '☄', cd: 90, dur: 0, prix: 800, unlockLevel: 3, desc: 'Cible le vaisseau visé : dégâts massifs.' },
-  soutien: { id: 'soutien', nom: 'Flotte de soutien', icon: '🚀', cd: 600, dur: 180, prix: 1000, unlockLevel: 3, desc: '3 chasseurs alliés en saut spatial pendant 3 min.' },
+  soutien: { id: 'soutien', nom: 'Flotte de soutien', icon: '', cd: 600, dur: 180, prix: 1000, unlockLevel: 3, desc: '13 chasseurs alliés en saut spatial pendant 3 min.' },
 };
 export const GADGET_ORDER: GadgetId[] = ['fumee', 'camouflage', 'bouclier_orbital', 'frappe', 'soutien'];
 

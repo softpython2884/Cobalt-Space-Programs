@@ -38,7 +38,7 @@ const CLASS_SHAPE: Record<ShipClassId, string> = {
   bombardier: 'kite',     // losange allongé vers l'avant
   croiseur: 'penta',      // pentagone pointé vers l'avant
   mineur: 'losange',      // losange
-  cargo: 'square',        // carré plein
+  cargo: 'hole',          // petit carré troué (le grand carré = bâtiments)
   transporteur: 'house',  // pentagone maison
   raider: 'tri_rect',     // triangle rectangle
 };
@@ -474,7 +474,7 @@ export class Renderer3D {
       if (drill && s.miningRes) drill.rotation.x += dt * 8;
 
       // icône tactique : forme géométrique propre à la classe (amiral : cadre)
-      const iconShape = s.isFlagship ? 'frame' : CLASS_SHAPE[s.cls];
+      const iconShape = s.isFlagship ? 'diamond' : CLASS_SHAPE[s.cls];
       this.syncIcon(s.id, s.pos, iconShape, teamColorOf(s.team), tactical && detected, s.heading);
     }
 
@@ -613,6 +613,31 @@ export class Renderer3D {
       }
       m.position.set(c.pos.x, 0, c.pos.y);
       m.rotation.y += dt * 0.05;
+    }
+
+    // Météores en vol : rocher incandescent + traînée de feu
+    for (const mt of gs.meteors) {
+      if (!mt.alive) continue;
+      seen.add(mt.id);
+      let m = this.meshes.get(mt.id);
+      if (!m) {
+        const grp = new THREE.Group();
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(6, 0),
+          new THREE.MeshStandardMaterial({ color: 0x6b4a3a, emissive: 0xff5d2a, emissiveIntensity: 0.9, flatShading: true }));
+        grp.add(rock);
+        const glow = new THREE.Mesh(new THREE.IcosahedronGeometry(9, 0),
+          new THREE.MeshBasicMaterial({ color: 0xff8c42, transparent: true, opacity: 0.35, depthWrite: false }));
+        grp.add(glow);
+        m = grp;
+        this.meshes.set(mt.id, m);
+        this.scene.add(m);
+      }
+      m.position.set(mt.pos.x, 6, mt.pos.y);
+      m.rotation.x += dt * 5;
+      m.rotation.y += dt * 3;
+      if (Math.random() < dt * 50) {
+        this.spawnParticles(new THREE.Vector3(mt.pos.x, 6, mt.pos.y), 0xff8c42, 2, 16, 0.5, 2.4);
+      }
     }
 
     // Nuages électriques
@@ -764,10 +789,11 @@ export class Renderer3D {
       case 'semi': ctx.arc(24, 30, 18, Math.PI, 0); ctx.lineTo(42, 34); ctx.lineTo(6, 34); break;
       case 'ring': ctx.arc(24, 24, 17, 0, Math.PI * 2); ctx.arc(24, 24, 9, 0, Math.PI * 2, true); break;
       case 'frame': ctx.rect(6, 6, 36, 36); ctx.rect(16, 16, 16, 16); break;
+      case 'hole': ctx.rect(12, 12, 24, 24); ctx.rect(19, 19, 10, 10); break;
       default: ctx.arc(24, 24, 17, 0, Math.PI * 2); break;
     }
     ctx.closePath();
-    if (shape === 'ring' || shape === 'frame') ctx.fill('evenodd'); else ctx.fill();
+    if (shape === 'ring' || shape === 'frame' || shape === 'hole') ctx.fill('evenodd'); else ctx.fill();
     ctx.stroke();
     const tex = new THREE.CanvasTexture(c);
     m = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });

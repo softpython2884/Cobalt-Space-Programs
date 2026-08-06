@@ -61,7 +61,7 @@ export function makeStructure(gs: GameState, team: number, stype: StructType, po
     pos: { ...pos }, radius: def.radius,
     hull: def.hull, hullMax: def.hull,
     shield: def.shield, shieldMax: def.shield,
-    level: 1, fireCd: 0, incomeT: 0, lastDmgT: -999, pendingCredits: 0, alive: true,
+    level: 1, fireCd: 0, incomeT: 0, lastDmgT: -999, pendingCredits: 0, pendingAllied: {}, alive: true,
   };
   gs.structures.push(st);
   return st;

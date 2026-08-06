@@ -486,6 +486,12 @@ export class HUD {
       const s = st.stype === 'station' ? 5 : 3;
       ctx.fillRect(q[0] - s / 2, q[1] - s / 2, s, s);
     }
+    // météores
+    ctx.fillStyle = '#ffb35d';
+    for (const mt of gs.meteors) {
+      const q = toRadar(mt.pos);
+      if (q) { ctx.beginPath(); ctx.arc(q[0], q[1], 2.5, 0, Math.PI * 2); ctx.fill(); }
+    }
     // épaves
     ctx.fillStyle = 'rgba(255,216,75,0.8)';
     for (const w of gs.wrecks) {

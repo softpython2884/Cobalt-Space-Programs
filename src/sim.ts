@@ -1,6 +1,6 @@
 // ============ COBALT SECTOR — simulation (physique, combat, économie, événements) ============
 import {
-  GameState, Ship, Structure, Planet, StormCloud, Stance, PlanFilter, V2, v2, add, sub, scale, len, dist, norm, angleOf,
+  GameState, Ship, Structure, Planet, StormCloud, Meteor, Stance, PlanFilter, V2, v2, add, sub, scale, len, dist, norm, angleOf,
   fromAngle, clamp, turnToward, IDLE, PIRATE_TEAM, NO_TEAM, WORLD_R, addLog, setAlert,
   shipById, structById, planetById, GadgetId, MineType, WeaponId, ShipClassId, StructType, Res,
   areAllied, allyKey,
@@ -13,9 +13,10 @@ import {
   SALVAGE_RANGE, DOCK_RANGE, MINING_RANGE, MINING_RATE, DIFF_MULT, MINE_RESTOCK_PRICE,
   UPGRADES, STATION_UPGRADE_PRICE, PIRATE_RAID_PERIOD,
   LABO_INCOME, LABO_INCOME_PERIOD, GUARD_COST, GUARD_COMP,
-  DEPOT_RATE, ALLY_TRADE_MULT, ALLIANCE_DURATION, PLANET_UPGRADE_COST, PLANET_UPGRADE_HP, DIFF_TUNING,
+  DEPOT_RATE, DEPOT_CAP, DEPOT_ALLY_BONUS, ALLY_TRADE_MULT, ALLIANCE_DURATION, PLANET_UPGRADE_COST, PLANET_UPGRADE_HP, DIFF_TUNING,
 } from './data';
 import {
+  makeRoid, makeCloud,
   makeShip, makeStructure, makeWreck, makeProjectile, makeMineEnt, applyUpgrades, speedMult,
   isEnemy, nearestShip, nearestStruct, nearestRoid, nearestCloud, canDetect, cargoTotal, addCargo,
   setAllianceCheck,
@@ -25,6 +26,13 @@ import { PERSONAS } from './data';
 import { thinkTeams, thinkPirates, spawnPirateRaid } from './ai';
 
 const DRAG = 1.1;
+
+/** Charge totale en attente d'un dépôt (propriétaire + alliés). */
+function depotLoad(st: Structure): number {
+  let sum = st.pendingCredits;
+  for (const k in st.pendingAllied) sum += st.pendingAllied[k];
+  return sum;
+}
 
 /** Doctrine de tir du vaisseau : celle de sa flotte, sinon « feu à volonté ». */
 function stanceOf(gs: GameState, s: Ship): Stance {
@@ -101,6 +109,7 @@ export function simTick(gs: GameState, dt: number) {
 
   updateStarBodies(gs, dt);
   updateStorms(gs, dt);
+  updateMeteors(gs, dt);
   updateFleetMissions(gs, dt);
   thinkTeams(gs, dt);
   thinkPirates(gs, dt);
@@ -146,6 +155,58 @@ function updateStarBodies(gs: GameState, dt: number) {
       b.pos.y = Math.sin(b.phase) * b.orbitR;
     }
   }
+}
+
+// ================================================================
+//  MÉTÉORES — pluies de ressources à partir de 8 min (3 tous les ~5 min)
+// ================================================================
+function updateMeteors(gs: GameState, dt: number) {
+  if (gs.t >= 480) {
+    gs.meteorT -= dt;
+    if (gs.meteorT <= 0) {
+      gs.meteorT = 280 + gs.rng() * 60;
+      for (let i = 0; i < 3; i++) {
+        const edge = gs.rng() * Math.PI * 2;
+        const from = fromAngle(edge, WORLD_R * 1.05);
+        const target = fromAngle(gs.rng() * Math.PI * 2, gs.map.killRadius + 200 + gs.rng() * (WORLD_R * 0.7));
+        const m: Meteor = {
+          id: gs.nextId++, kind: 'meteor',
+          pos: from, vel: scale(norm(sub(target, from)), 190 + gs.rng() * 50),
+          target, alive: true,
+        };
+        gs.meteors.push(m);
+      }
+      addLog(gs, 'Pluie de météores détectée : ressources fraîches à l\'impact.', '#ffb35d');
+      setAlert(gs, 'PLUIE DE MÉTÉORES EN APPROCHE', 4, '#ffb35d');
+    }
+  }
+  for (const m of gs.meteors) {
+    if (!m.alive) continue;
+    m.pos = add(m.pos, scale(m.vel, dt));
+    // traînée de feu
+    if (gs.rng() < dt * 30) gs.fx.push({ type: 'tir', pos: { ...m.pos }, color: 0xff8c42, wid: 'canon' });
+    if (dist(m.pos, m.target) < 26) {
+      m.alive = false;
+      gs.fx.push({ type: 'explosion', pos: { ...m.pos }, size: 26, color: 0xffb35d });
+      gs.fx.push({ type: 'onde', pos: { ...m.pos }, size: 60, color: 0xff8c42 });
+      for (const sh of gs.ships) {
+        if (!sh.alive) continue;
+        const d2 = dist(sh.pos, m.pos);
+        if (d2 < 34) applyDamage(gs, sh, 25 * (1 - d2 / 34), NO_TEAM, true);
+      }
+      // gisement : quantités mélangées semi-aléatoires
+      makeRoid(gs, 'roche', add(m.pos, fromAngle(gs.rng() * Math.PI * 2, 8)), 7 + gs.rng() * 5, 20 + Math.floor(gs.rng() * 25));
+      if (gs.rng() < 0.65) {
+        makeRoid(gs, 'minerai', add(m.pos, fromAngle(gs.rng() * Math.PI * 2, 16)), 5 + gs.rng() * 5, 10 + Math.floor(gs.rng() * 18));
+      }
+      if (gs.rng() < 0.4) {
+        makeCloud(gs, add(m.pos, fromAngle(gs.rng() * Math.PI * 2, 20)), 24 + gs.rng() * 14, 8 + Math.floor(gs.rng() * 40));
+      }
+    } else if (len(m.pos) > WORLD_R * 1.2) {
+      m.alive = false;
+    }
+  }
+  gs.meteors = gs.meteors.filter(m => m.alive);
 }
 
 // ================================================================
@@ -373,16 +434,44 @@ function updateShipStatus(gs: GameState, s: Ship, dt: number) {
     s.hull = clamp(s.hull + HULL_REGEN_RATE * (docked ? 5 : 1) * dt, 0, s.hullMax);
   }
 
-  // amarré à un dépôt ami : décharge la soute dans le tampon du dépôt
-  const depot = nearestStruct(gs, s.pos, x => x.team === s.team && x.stype === 'depot', DOCK_RANGE);
+  // amarré à un dépôt ami ou ALLIÉ (s'il n'est pas plein) : décharge la soute
+  const depot = nearestStruct(gs, s.pos,
+    x => x.stype === 'depot' && (x.team === s.team || areAllied(gs, x.team, s.team)) && depotLoad(x) < DEPOT_CAP,
+    DOCK_RANGE);
   if (depot && cargoTotal(s) > 0) {
     let value = 0;
     for (const r of ['roche', 'minerai', 'gaz'] as Res[]) {
       value += s.cargo[r] * RES_PRICE[r];
       s.cargo[r] = 0;
     }
-    depot.pendingCredits += Math.round(value);
-    if (s.id === gs.playerShipId) addLog(gs, `Cargaison déposée au dépôt (+${Math.round(value)} en attente).`, '#ffd84b');
+    value = Math.round(value);
+    if (depot.team === s.team) {
+      depot.pendingCredits += value;
+    } else {
+      // dépôt chez un allié : il touche 20 % en bonus, sans rien vous retirer
+      depot.pendingAllied[s.team] = (depot.pendingAllied[s.team] ?? 0) + value;
+      depot.pendingCredits += Math.round(value * DEPOT_ALLY_BONUS);
+    }
+    if (s.id === gs.playerShipId) addLog(gs, `Cargaison déposée au dépôt (+${value} en attente).`, '#ffd84b');
+  }
+
+  // amarré à la station d'un ALLIÉ : vente pleine valeur, 20 % de bonus pour l'hôte
+  if (cargoTotal(s) > 0) {
+    const allySt = nearestStruct(gs, s.pos,
+      x => x.stype === 'station' && x.team !== s.team && areAllied(gs, x.team, s.team), DOCK_RANGE);
+    if (allySt) {
+      let value = 0;
+      for (const r of ['roche', 'minerai', 'gaz'] as Res[]) {
+        value += s.cargo[r] * RES_PRICE[r];
+        s.cargo[r] = 0;
+      }
+      value = Math.round(value);
+      const me = gs.teams[s.team];
+      const host = gs.teams[allySt.team];
+      if (me) me.credits += value;
+      if (host) host.credits += Math.round(value * DEPOT_ALLY_BONUS);
+      if (s.id === gs.playerShipId) addLog(gs, `Vente chez l'allié : +${value} crédits.`, '#ffd84b');
+    }
   }
 
   // amarré à sa station : vente auto de la soute + réassort de mines
@@ -648,9 +737,15 @@ function mineBehavior(gs: GameState, s: Ship, dt: number) {
   const team = gs.teams[s.team];
   s.miningRes = null;
   if (cargoTotal(s) >= s.cargoMax - 0.5) {
-    const st = structById(gs, team?.stationId ?? -1);
-    const depot = nearestStruct(gs, s.pos, x => x.team === s.team && x.stype === 'depot', Infinity);
-    const target = depot && (!st || dist(depot.pos, s.pos) < dist(st.pos, s.pos)) ? depot : st;
+    // point de dépôt le plus proche : dépôt (non plein) ou station, chez soi ou chez un allié
+    const candidates: Structure[] = gs.structures.filter(x => x.alive
+      && (x.team === s.team || areAllied(gs, x.team, s.team))
+      && (x.stype === 'station' || (x.stype === 'depot' && depotLoad(x) < DEPOT_CAP)));
+    let target: Structure | null = null, bd = Infinity;
+    for (const c of candidates) {
+      const d = dist(c.pos, s.pos);
+      if (d < bd) { bd = d; target = c; }
+    }
     if (!target) { s.order = { ...IDLE }; return; }
     arrive(gs, s, target.pos, dt, DOCK_RANGE * 0.6); // le déchargement est automatique une fois amarré
     return;
@@ -761,6 +856,20 @@ function integrate(gs: GameState, s: Ship, dt: number) {
   // limites du monde
   const d = len(s.pos);
   if (d > WORLD_R) s.pos = scale(s.pos, WORLD_R / d);
+
+  // séparation douce entre vaisseaux proches (anti-empilement)
+  for (const o of gs.ships) {
+    if (!o.alive || o.id === s.id) continue;
+    const minD = o.radius + s.radius + 3;
+    const dx = s.pos.x - o.pos.x, dy = s.pos.y - o.pos.y;
+    if (Math.abs(dx) > minD || Math.abs(dy) > minD) continue;
+    const d = Math.hypot(dx, dy);
+    if (d < minD && d > 0.01) {
+      const push = (minD - d) / minD * 42 * dt;
+      s.vel.x += (dx / d) * push;
+      s.vel.y += (dy / d) * push;
+    }
+  }
 
   // collisions douces avec astéroïdes / planètes / structures
   for (const r of gs.roids) {
@@ -1096,11 +1205,22 @@ function updateStructures(gs: GameState, dt: number) {
       const nearRoid = gs.roids.some(r => r.alive && dist(r.pos, st.pos) < 150);
       if (nearRoid) team.credits += Math.round(MINE_INCOME * mult);
     }
-    if (st.stype === 'depot' && st.pendingCredits > 0) {
-      // le dépôt écoule sa valeur à débit limité
-      const out = Math.min(st.pendingCredits, DEPOT_RATE * dt * (team.isAI ? DIFF_MULT[gs.cfg.difficulty] : 1));
-      st.pendingCredits -= out;
-      team.credits += out;
+    if (st.stype === 'depot' && depotLoad(st) > 0) {
+      // le dépôt écoule sa valeur à débit limité : le propriétaire d'abord, puis les alliés
+      let budget = DEPOT_RATE * dt;
+      const own = Math.min(st.pendingCredits, budget);
+      st.pendingCredits -= own;
+      team.credits += own;
+      budget -= own;
+      for (const k in st.pendingAllied) {
+        if (budget <= 0) break;
+        const t2 = gs.teams[Number(k)];
+        const out = Math.min(st.pendingAllied[k], budget);
+        st.pendingAllied[k] -= out;
+        budget -= out;
+        if (t2) t2.credits += out;
+        if (st.pendingAllied[k] <= 0) delete st.pendingAllied[k];
+      }
     }
     if (st.stype === 'labo' && st.incomeT >= LABO_INCOME_PERIOD) {
       st.incomeT = 0;
@@ -1549,7 +1669,7 @@ export function activateGadget(gs: GameState, teamId: number, gid: GadgetId, tar
       break;
     }
     case 'soutien': {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 13; i++) {
         const pos = add(s.pos, fromAngle(gs.rng() * Math.PI * 2, 34));
         const ally = makeShip(gs, teamId, 'chasseur', pos);
         ally.supportT = def.dur;

@@ -91,6 +91,7 @@ export const sfx = {
     setTimeout(() => osc('sawtooth', 780, 0.5, 0.14, 420), 500);
   },
   thunder(vol = 1) { noise(0.7, 0.35 * vol, 400, 60); osc('triangle', 60, 0.5, 0.15 * vol, 25); },
+  hyper() { noise(2.4, 0.22, 300, 3600); osc('sine', 70, 2.4, 0.14, 620); },
 };
 
 // ---------- Moteur du vaisseau (boucle continue) ----------

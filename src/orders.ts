@@ -1,6 +1,6 @@
 // ============ COBALT SECTOR — ordres, flottes, formations ============
 import {
-  GameState, Ship, Fleet, FormationId, Order, V2, v2, fromAngle, shipById, addLog, IDLE,
+  GameState, Ship, Fleet, FormationId, Order, V2, v2, fromAngle, shipById, addLog, IDLE, norm, sub,
 } from './core';
 import { SHIP_CLASSES } from './data';
 
@@ -133,6 +133,7 @@ export function setFleetMission(gs: GameState, fleet: Fleet, mission: Order) {
 /** Donne un ordre à une liste de vaisseaux (sélection) : gère les flottes entières si le chef est inclus. */
 export function issueOrder(gs: GameState, shipIds: number[], order: Order) {
   const done = new Set<number>();
+  const direct: Ship[] = [];
   for (const id of shipIds) {
     if (done.has(id)) continue;
     const s = shipById(gs, id);
@@ -149,6 +150,28 @@ export function issueOrder(gs: GameState, shipIds: number[], order: Order) {
     s.tradePhase = 0;
     s.colonizeT = 0;
     done.add(id);
+    direct.push(s);
+  }
+  // « Déplacer ici » en groupe : coin à pointe plate (rangées 3, 5, 7…)
+  // pour que les vaisseaux ne s'empilent pas sur le point d'arrivée
+  if (order.kind === 'move' && order.pos && direct.length > 1) {
+    const cx = direct.reduce((acc, sh) => acc + sh.pos.x, 0) / direct.length;
+    const cy = direct.reduce((acc, sh) => acc + sh.pos.y, 0) / direct.length;
+    const dir = norm(sub(order.pos, { x: cx, y: cy }));
+    const perp = { x: -dir.y, y: dir.x };
+    let idx = 0, row = 0;
+    while (idx < direct.length) {
+      const width = 3 + row * 2;
+      for (let col = 0; col < width && idx < direct.length; col++, idx++) {
+        const lateral = (col - (width - 1) / 2) * 20;
+        const back = row * 24;
+        direct[idx].order.pos = {
+          x: order.pos.x + perp.x * lateral - dir.x * back,
+          y: order.pos.y + perp.y * lateral - dir.y * back,
+        };
+      }
+      row++;
+    }
   }
 }
 
