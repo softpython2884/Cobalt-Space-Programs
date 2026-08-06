@@ -35,6 +35,15 @@ function depotLoad(st: Structure): number {
   return sum;
 }
 
+/** Amiral piloté par un humain ? (pas d'autopilote, pas de ramassage IA) */
+export function isHumanFlag(gs: GameState, s: Ship): boolean {
+  return s.isFlagship && !!gs.teams[s.team] && !gs.teams[s.team].isAI;
+}
+/** Amiral (vaisseau contrôlé) d'une équipe. */
+export function flagshipOf(gs: GameState, team: number): Ship | undefined {
+  return gs.ships.find(x => x.alive && x.team === team && x.isFlagship);
+}
+
 /** Doctrine de tir du vaisseau : celle de sa flotte, sinon « feu à volonté ». */
 function stanceOf(gs: GameState, s: Ship): Stance {
   if (s.fleetId != null) {
@@ -513,7 +522,7 @@ function autoSell(gs: GameState, s: Ship) {
 //  PILOTE AUTOMATIQUE — exécution des ordres
 // ================================================================
 function execOrder(gs: GameState, s: Ship, dt: number) {
-  if (s.id === gs.playerShipId) { playerAssist(gs, s, dt); return; }
+  if (isHumanFlag(gs, s)) { playerAssist(gs, s, dt); return; }
   if (s.empT > 0 || s.jumpT > 0) return;
   const o = s.order;
   switch (o.kind) {
@@ -660,7 +669,7 @@ function combatApproach(gs: GameState, s: Ship, targetPos: V2, target: Ship | St
     const ws = s.weapons[i];
     const w = WEAPONS[ws.wid];
     if (ws.wid === 'missile') {
-      if (s.id === gs.playerShipId) continue;      // le joueur verrouille lui-même (touche A)
+      if (isHumanFlag(gs, s)) continue;            // les humains verrouillent eux-mêmes (touche A)
       if (target.kind === 'planet') continue;
       const tid = (target as Ship | Structure).id;
       if (ws.cd > 0 || s.energy < w.energy || d > w.range) {
@@ -680,7 +689,7 @@ function combatApproach(gs: GameState, s: Ship, targetPos: V2, target: Ship | St
   }
 
   // en combat rapproché, l'IA largue parfois une de ses bombes
-  if (s.id !== gs.playerShipId && s.mineCount > 0 && d < 70 && gs.rng() < dt * 0.25) {
+  if (!isHumanFlag(gs, s) && s.mineCount > 0 && d < 70 && gs.rng() < dt * 0.25) {
     dropMine(gs, s, targetPos);
   }
 }
@@ -1389,7 +1398,7 @@ function updateWrecks(gs: GameState, dt: number) {
     if (w.t <= 0) { w.alive = false; continue; }
     // récupération par n'importe quel vaisseau proche (IA comprise)
     for (const s of gs.ships) {
-      if (!s.alive || s.id === gs.playerShipId) continue;
+      if (!s.alive || isHumanFlag(gs, s)) continue;
       if (dist(s.pos, w.pos) < SALVAGE_RANGE) {
         w.alive = false;
         const team = gs.teams[s.team];
@@ -1469,7 +1478,8 @@ function checkVictory(gs: GameState) {
   if (gs.status !== 'playing') return;
   const alive = gs.activeTeams.filter(id => gs.teams[id].alive);
   // (isAI sur l'équipe joueur = mode spectateur/test : la partie continue sans lui)
-  if (!gs.teams[gs.playerTeam].alive && !gs.teams[gs.playerTeam].isAI) {
+  // En multijoueur, l'élimination d'un humain ne termine pas la partie.
+  if (!gs.cfg.multiplayer && !gs.teams[gs.playerTeam].alive && !gs.teams[gs.playerTeam].isAI) {
     gs.status = 'over';
     gs.winner = alive.length === 1 ? alive[0] : -1;
     gs.overReason = 'Votre station a été détruite.';
@@ -1520,8 +1530,8 @@ export function tryBuyShip(gs: GameState, teamId: number, cls: ShipClassId, pilo
   const pos = add(st.pos, fromAngle(gs.rng() * Math.PI * 2, st.radius + 25));
   const ship = makeShip(gs, teamId, cls, pos);
   gs.fx.push({ type: 'saut', pos: { ...pos } });
-  if (pilot && teamId === gs.playerTeam) {
-    const old = playerShip(gs);
+  if (pilot && !team.isAI) {
+    const old = flagshipOf(gs, teamId);
     if (old) {
       // reprise : l'ancien vaisseau est revendu à moitié prix
       team.credits += Math.round(SHIP_CLASSES[old.cls].prix * 0.5);
@@ -1530,8 +1540,8 @@ export function tryBuyShip(gs: GameState, teamId: number, cls: ShipClassId, pilo
     }
     ship.isFlagship = true;
     applyUpgrades(gs, ship);
-    gs.playerShipId = ship.id;
-    addLog(gs, `Vous pilotez maintenant : ${def.nom}.`, '#40c4ff');
+    if (teamId === gs.playerTeam) gs.playerShipId = ship.id;
+    addLog(gs, `${team.name} pilote maintenant : ${def.nom}.`, team.cssColor);
   } else {
     // vaisseau recruté : ordres par défaut selon la classe
     if (cls === 'mineur') ship.order = { kind: 'mine' };
@@ -1573,7 +1583,7 @@ export function tryBuyUpgrade(gs: GameState, teamId: number, upgradeId: string):
 export function tryBuyWeapon(gs: GameState, teamId: number, wid: WeaponId): string | null {
   const team = gs.teams[teamId];
   if (!team) return 'Équipe invalide';
-  const flag = playerShip(gs);
+  const flag = flagshipOf(gs, teamId);
   if (!flag) return 'Aucun vaisseau';
   const def = WEAPONS[wid];
   const slots = SHIP_CLASSES[flag.cls].secondarySlots;
@@ -1741,10 +1751,68 @@ export function activateGadget(gs: GameState, teamId: number, gid: GadgetId, tar
   return null;
 }
 
-/** Minage manuel du joueur (touche F maintenue). Retourne la ressource minée ou null. */
-export function playerMine(gs: GameState, dt: number): Res | null {
-  const s = playerShip(gs);
-  if (!s) return null;
+/** Applique les entrées continues d'un humain (serveur multijoueur). */
+export function applyHumanInput(gs: GameState, teamId: number,
+  input: { thrust: { x: number; y: number }; aim: V2; fire: boolean; fireE: boolean; mineF: boolean }, dt: number) {
+  const ship = flagshipOf(gs, teamId);
+  if (!ship || ship.empT > 0 || ship.jumpT > 0) return;
+  const def = SHIP_CLASSES[ship.cls];
+  const l = Math.hypot(input.thrust.x, input.thrust.y);
+  if (l > 0.01) {
+    ship.vel.x += (input.thrust.x / l) * def.accel * dt;
+    ship.vel.y += (input.thrust.y / l) * def.accel * dt;
+  }
+  if (ship.cls !== 'colosse') {
+    if (input.fire) fireShipWeapon(gs, ship, 0, input.aim);
+    if (input.fireE) fireShipWeapon(gs, ship, 2, input.aim);
+  }
+  if (input.mineF) shipMineHold(gs, ship, dt);
+}
+
+/** Tir missile demandé par un client : le serveur revalide tout. */
+export function missileFireCmd(gs: GameState, teamId: number, targetId: number): string | null {
+  const ship = flagshipOf(gs, teamId);
+  if (!ship) return 'Aucun vaisseau';
+  const slot = missileSlot(ship);
+  if (slot < 0) return 'Pas de lance-missiles';
+  const w = WEAPONS.missile;
+  if (ship.weapons[slot].cd > 0) return 'Missile en recharge';
+  if (ship.energy < w.energy) return 'Énergie insuffisante';
+  const target = shipById(gs, targetId) ?? structById(gs, targetId);
+  if (!target || !isEnemy(ship.team, target.team)) return 'Cible invalide';
+  if (dist(target.pos, ship.pos) > w.range * 1.2) return 'Cible hors de portée';
+  ship.lockT = w.lockTime ?? 1.2;
+  ship.lockTargetId = targetId;
+  lockRelease(gs, ship);
+  return null;
+}
+
+/** Salve du Colosse demandée par un client. */
+export function salveFireCmd(gs: GameState, teamId: number, targets: number[]): string | null {
+  const ship = flagshipOf(gs, teamId);
+  if (!ship || ship.cls !== 'colosse') return 'Pas de Colosse';
+  const w = WEAPONS.salve;
+  if (ship.weapons[0].cd > 0) return 'Salve en recharge';
+  if (ship.energy < w.energy) return 'Énergie insuffisante';
+  const valid = targets.slice(0, COLOSSE_SALVO_SIZE).filter(tid => {
+    const t = shipById(gs, tid);
+    return t && isEnemy(ship.team, t.team) && dist(t.pos, ship.pos) < w.range * 1.2;
+  });
+  if (valid.length === 0) return 'Aucune cible valide';
+  ship.weapons[0].cd = w.cd;
+  ship.energy -= w.energy;
+  valid.forEach((tid, i) => {
+    const t = shipById(gs, tid);
+    const dir = t ? norm(sub(t.pos, ship.pos)) : fromAngle(ship.heading + i);
+    const from = add(ship.pos, fromAngle((i / COLOSSE_SALVO_SIZE) * Math.PI * 2, ship.radius + 3));
+    makeProjectile(gs, ship.team, 'missile', from, scale(dir, w.speed ?? 160), w.dmg, 3.2, tid);
+    gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'missile' });
+  });
+  return null;
+}
+
+/** Minage manuel d'un vaisseau (touche F maintenue). */
+export function shipMineHold(gs: GameState, s: Ship, dt: number): Res | null {
   if (cargoTotal(s) >= s.cargoMax - 0.01) return null;
   let target: { kind: string; rtype?: 'roche' | 'minerai'; amount: number; pos: V2; alive: boolean; radius: number } | null = null;
   const roid = nearestRoid(gs, s.pos, MINING_RANGE + 20);
@@ -1756,6 +1824,13 @@ export function playerMine(gs: GameState, dt: number): Res | null {
   if (!target) return null;
   harvest(gs, s, target, dt);
   return s.miningRes;
+}
+
+/** Minage manuel du joueur (touche F maintenue). Retourne la ressource minée ou null. */
+export function playerMine(gs: GameState, dt: number): Res | null {
+  const s = playerShip(gs);
+  if (!s) return null;
+  return shipMineHold(gs, s, dt);
 }
 
 /** Renforce la colonie d'une planète possédée (+vie max, réparation). */
@@ -1774,17 +1849,17 @@ export function tryUpgradePlanet(gs: GameState, teamId: number, planetId: number
 }
 
 /** Prend le contrôle du vaisseau allié le plus proche (l'actuel passe à l'IA). */
-export function takeControlNearest(gs: GameState): string | null {
-  const cur = playerShip(gs);
+export function takeControlNearest(gs: GameState, teamId = gs.playerTeam): string | null {
+  const cur = flagshipOf(gs, teamId);
   if (!cur) return 'Aucun vaisseau';
-  const other = nearestShip(gs, cur.pos, s => s.team === gs.playerTeam && s.id !== cur.id && s.supportT <= 0, 220);
+  const other = nearestShip(gs, cur.pos, s => s.team === teamId && s.id !== cur.id && s.supportT <= 0, 220);
   if (!other) return 'Aucun vaisseau allié à proximité (220 m)';
   cur.isFlagship = false;
   cur.order = { kind: 'guard', pos: { ...cur.pos } };
   other.isFlagship = true;
   other.order = { ...IDLE };
   removeFromFleet(gs, other);
-  gs.playerShipId = other.id;
+  if (teamId === gs.playerTeam) gs.playerShipId = other.id;
   addLog(gs, `Contrôle transféré : ${SHIP_CLASSES[other.cls].nom}.`, '#40c4ff');
   return null;
 }
@@ -1910,8 +1985,9 @@ function updateFleetMissions(gs: GameState, dt: number) {
     if (kind === 'plan') {
       const lead = shipById(gs, f.leaderId);
       if (!lead) continue;
+      const plan = gs.plans[f.team] ?? { filter: 'tout' as const, objective: null, armed: false };
       const staging = f.mission.pos;
-      if (!gs.plan.armed || !gs.plan.objective) {
+      if (!plan.armed || !plan.objective) {
         // phase de mise en place : rejoindre la position et tenir la formation
         if (staging && dist(lead.pos, staging) > 30) {
           if (lead.order.kind !== 'move') lead.order = { kind: 'move', pos: { ...staging } };
@@ -1920,15 +1996,15 @@ function updateFleetMissions(gs: GameState, dt: number) {
         }
       } else {
         // exécution : avancer vers l'objectif en engageant les cibles autorisées
-        const targetId = planPickTarget(gs, f.team, lead.pos, gs.plan.filter);
+        const targetId = planPickTarget(gs, f.team, lead.pos, plan.filter);
         if (targetId != null) {
           if (lead.order.kind !== 'attack' || lead.order.targetId !== targetId) {
             lead.order = { kind: 'attack', targetId };
           }
-        } else if (dist(lead.pos, gs.plan.objective) > 60) {
-          if (lead.order.kind !== 'move') lead.order = { kind: 'move', pos: { ...gs.plan.objective } };
+        } else if (dist(lead.pos, plan.objective) > 60) {
+          if (lead.order.kind !== 'move') lead.order = { kind: 'move', pos: { ...plan.objective } };
         } else if (lead.order.kind !== 'guard') {
-          lead.order = { kind: 'guard', pos: { ...gs.plan.objective } };
+          lead.order = { kind: 'guard', pos: { ...plan.objective } };
         }
       }
       for (const id of f.members) {

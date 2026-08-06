@@ -1,0 +1,313 @@
+// ============ COBALT SECTOR — serveur multijoueur (LAN & en ligne) ============
+// Serveur AUTORITAIRE : il exécute la vraie simulation (les mêmes modules que le
+// jeu) et diffuse des instantanés ~12 Hz. Les clients envoient entrées + commandes.
+//
+//   npm run server        → ws://<ip>:17771 (+ sert dist/ en HTTP si présent)
+//
+// LAN : lancez-le sur n'importe quel PC du réseau. En ligne : sur la machine
+// dédiée — mêmes trois modes côté client : Partie rapide / Créer un salon / Code.
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { WebSocketServer, WebSocket } from 'ws';
+import { GameState, MatchConfig, FxEvent, V2, SIM_DT, Stance, PlanFilter, OrderKind, shipById } from '../src/core';
+import { newGame } from '../src/world';
+import {
+  simTick, applyHumanInput, missileFireCmd, salveFireCmd, colossusWorldBreaker,
+  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation,
+  placeStructure, tryUpgradePlanet, buyGuards, activateGadget, toggleMode, tryJump,
+  takeControlNearest, dropMine, flagshipOf,
+  proposeAlliance, breakAlliance, requestFocus, requestDefend, acceptOffer, refuseOffer,
+} from '../src/sim';
+import { issueOrder, createFleet, disbandFleet, setFleetMission, fleetShips } from '../src/orders';
+import { encodeSnap, InputMsg } from '../src/netcodec';
+
+const PORT = Number(process.env.PORT ?? 17771);
+const SNAP_HZ = 12;
+
+interface Player {
+  ws: WebSocket;
+  name: string;
+  team: number;
+  input: InputMsg;
+  prevInput: InputMsg;
+}
+interface Room {
+  code: string;
+  isPublic: boolean;
+  players: Player[];
+  hostCfg: MatchConfig;
+  gs: GameState | null;
+  fxBuf: FxEvent[];
+  loop: NodeJS.Timeout | null;
+  snapAcc: number;
+}
+
+const rooms = new Map<string, Room>();
+
+const newCode = (): string => {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let c = '';
+  do {
+    c = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  } while (rooms.has(c));
+  return c;
+};
+
+const send = (ws: WebSocket, o: unknown) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o));
+};
+
+const emptyInput = (): InputMsg => ({ thrust: { x: 0, y: 0 }, aim: { x: 0, y: 0 }, fire: false, fireE: false, mineF: false });
+
+function broadcastLobby(room: Room) {
+  const players = room.players.map((p, i) => ({ name: p.name, team: p.team, host: i === 0 }));
+  room.players.forEach((p, i) => {
+    send(p.ws, { t: 'lobby', code: room.code, players, you: p.team, host: i === 0 });
+  });
+}
+
+function joinRoom(room: Room, ws: WebSocket, name: string) {
+  if (room.gs) { send(ws, { t: 'err', msg: 'La partie a déjà commencé' }); return; }
+  if (room.players.length >= 4) { send(ws, { t: 'err', msg: 'Salon complet' }); return; }
+  const taken = new Set(room.players.map(p => p.team));
+  let team = 0;
+  while (taken.has(team)) team++;
+  room.players.push({ ws, name: name.slice(0, 16) || 'Amiral', team, input: emptyInput(), prevInput: emptyInput() });
+  (ws as any).room = room;
+  broadcastLobby(room);
+}
+
+function startRoom(room: Room) {
+  const humans = room.players.map(p => p.team);
+  const cfg: MatchConfig = {
+    ...room.hostCfg,
+    seed: Math.floor(Math.random() * 1e9),
+    humanTeams: humans,
+    multiplayer: true,
+    aiCount: Math.min(room.hostCfg.aiCount, 4 - humans.length),
+  };
+  room.gs = newGame(cfg);
+  room.fxBuf = [];
+  room.snapAcc = 0;
+  room.players.forEach(p => send(p.ws, { t: 'start', you: p.team }));
+
+  let last = Date.now();
+  let acc = 0;
+  room.loop = setInterval(() => {
+    const gs = room.gs!;
+    const now = Date.now();
+    acc += Math.min(0.25, (now - last) / 1000);
+    last = now;
+    while (acc >= SIM_DT) {
+      // entrées humaines : mouvements/tirs continus + fronts montants/descendants
+      for (const p of room.players) {
+        applyHumanInput(gs, p.team, p.input, SIM_DT);
+        p.prevInput = p.input;
+      }
+      simTick(gs, SIM_DT);
+      if (gs.fx.length) { room.fxBuf.push(...gs.fx); gs.fx.length = 0; }
+      acc -= SIM_DT;
+    }
+    room.snapAcc += 1;
+    if (room.snapAcc >= Math.round(60 / SNAP_HZ)) {
+      room.snapAcc = 0;
+      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200));
+      for (const p of room.players) {
+        if (p.ws.readyState === WebSocket.OPEN) p.ws.send(snap);
+      }
+    }
+    if (gs.status === 'over') {
+      // dernier instantané puis fermeture douce du salon (retour lobby impossible v1)
+      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200));
+      for (const p of room.players) if (p.ws.readyState === WebSocket.OPEN) p.ws.send(snap);
+      clearInterval(room.loop!);
+      room.loop = null;
+    }
+  }, 1000 / 60);
+}
+
+// ---------- Commandes de jeu (whitelist, l'équipe est celle de l'expéditeur) ----------
+function runCmd(gs: GameState, team: number, name: string, a: any): string | null {
+  const own = (ids: number[]) => ids.filter(id => shipById(gs, id)?.team === team);
+  switch (name) {
+    case 'buyShip': return tryBuyShip(gs, team, a.cls, !!a.pilot);
+    case 'buyUpgrade': return tryBuyUpgrade(gs, team, a.id);
+    case 'buyWeapon': return tryBuyWeapon(gs, team, a.wid);
+    case 'buyGadget': return tryBuyGadget(gs, team, a.gid);
+    case 'upgradeStation': return tryUpgradeStation(gs, team);
+    case 'place': return placeStructure(gs, team, a.stype, a.pos);
+    case 'planetUp': return tryUpgradePlanet(gs, team, a.planetId);
+    case 'guards': return buyGuards(gs, team, a.targetId);
+    case 'gadget': return activateGadget(gs, team, a.gid, a.targetId);
+    case 'mode': {
+      const f = flagshipOf(gs, team);
+      if (!f) return 'Aucun vaisseau';
+      if (a.mode === 'saut') return tryJump(gs, f);
+      toggleMode(gs, f, a.mode);
+      return null;
+    }
+    case 'takeControl': return takeControlNearest(gs, team);
+    case 'mine': {
+      const f = flagshipOf(gs, team);
+      return f && dropMine(gs, f, a.aim) ? null : 'Aucune mine disponible';
+    }
+    case 'order': { issueOrder(gs, own(a.ids ?? []), a.order); return null; }
+    case 'protect': {
+      for (const id of own(a.ids ?? [])) {
+        const sh = shipById(gs, id);
+        if (sh) sh.order = { kind: 'orbit', targetId: a.targetId };
+      }
+      return null;
+    }
+    case 'fleetCreate': return createFleet(gs, team, own(a.ids ?? []), a.formation) ? null : 'Sélection invalide';
+    case 'fleetDisband': {
+      const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team);
+      if (f) disbandFleet(gs, f.id);
+      return null;
+    }
+    case 'fleetMission': {
+      const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team);
+      if (f) setFleetMission(gs, f, a.mission);
+      return null;
+    }
+    case 'fleetFormation': {
+      const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team);
+      if (f) f.formation = a.frm;
+      return null;
+    }
+    case 'fleetStance': {
+      const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team);
+      if (f) f.stance = a.stance as Stance;
+      return null;
+    }
+    case 'planFilter': gs.plans[team].filter = a.filter as PlanFilter; return null;
+    case 'planObjective': gs.plans[team].objective = a.pos; gs.plans[team].armed = false; return null;
+    case 'planArm': gs.plans[team].armed = true; return null;
+    case 'planClear': {
+      gs.plans[team] = { filter: 'tout', objective: null, armed: false };
+      for (const f of gs.fleets) {
+        if (f.team === team && f.mission.kind === 'plan') setFleetMission(gs, f, { kind: 'idle' });
+      }
+      return null;
+    }
+    case 'missileFire': return missileFireCmd(gs, team, a.targetId);
+    case 'salveFire': return salveFireCmd(gs, team, a.targets ?? []);
+    case 'breaker': {
+      const f = flagshipOf(gs, team);
+      return f ? colossusWorldBreaker(gs, f, a.aim) : 'Aucun vaisseau';
+    }
+    case 'diploPropose': return proposeAlliance(gs, team, a.team);
+    case 'diploBreak': breakAlliance(gs, team, a.team); return null;
+    case 'diploFocus': return requestFocus(gs, team, a.team, a.target);
+    case 'diploDefend': return requestDefend(gs, team, a.team);
+    case 'offerAccept': acceptOffer(gs, a.id); return null;
+    case 'offerRefuse': refuseOffer(gs, a.id); return null;
+    default: return `Commande inconnue : ${name}`;
+  }
+}
+
+// ---------- HTTP (sert dist/ si buildé) + WebSocket ----------
+const DIST = path.resolve(process.cwd(), 'dist');
+const MIME: Record<string, string> = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+};
+
+const server = http.createServer((req, res) => {
+  const urlPath = (req.url ?? '/').split('?')[0];
+  const file = path.join(DIST, urlPath === '/' ? 'index.html' : urlPath);
+  if (fs.existsSync(DIST) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  } else {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('COBALT SECTOR — serveur multijoueur actif.\nBuildez le client (npm run build) pour le servir ici.');
+  }
+});
+
+const wss = new WebSocketServer({ server });
+
+wss.on('connection', ws => {
+  ws.on('message', raw => {
+    let m: any;
+    try { m = JSON.parse(String(raw)); } catch { return; }
+    const room: Room | undefined = (ws as any).room;
+    switch (m.t) {
+      case 'quick': {
+        let target = [...rooms.values()].find(r => r.isPublic && !r.gs && r.players.length < 4);
+        if (!target) {
+          target = { code: newCode(), isPublic: true, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+          rooms.set(target.code, target);
+        }
+        joinRoom(target, ws, m.name);
+        break;
+      }
+      case 'create': {
+        const r: Room = { code: newCode(), isPublic: false, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+        rooms.set(r.code, r);
+        joinRoom(r, ws, m.name);
+        break;
+      }
+      case 'join': {
+        const r = rooms.get(String(m.code ?? '').toUpperCase());
+        if (!r) { send(ws, { t: 'err', msg: 'Salon introuvable' }); return; }
+        joinRoom(r, ws, m.name);
+        break;
+      }
+      case 'start': {
+        if (room && !room.gs && room.players[0]?.ws === ws) {
+          if (room.players.length < 1) return;
+          startRoom(room);
+        }
+        break;
+      }
+      case 'in': {
+        if (room?.gs) {
+          const p = room.players.find(p => p.ws === ws);
+          if (p) p.input = m.i;
+        }
+        break;
+      }
+      case 'cmd': {
+        if (room?.gs && room.gs.status === 'playing') {
+          const p = room.players.find(p => p.ws === ws);
+          if (!p) return;
+          try {
+            const err = runCmd(room.gs, p.team, String(m.name), m.args ?? {});
+            if (err) send(ws, { t: 'hint', msg: err });
+          } catch (e) {
+            console.error('cmd error', m.name, e);
+          }
+        }
+        break;
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    const room: Room | undefined = (ws as any).room;
+    if (!room) return;
+    const idx = room.players.findIndex(p => p.ws === ws);
+    if (idx >= 0) room.players.splice(idx, 1);
+    if (room.players.length === 0) {
+      if (room.loop) clearInterval(room.loop);
+      rooms.delete(room.code);
+    } else if (!room.gs) {
+      broadcastLobby(room);
+    }
+    // en partie : l'équipe du déserteur passe à l'IA, la partie continue
+    if (room.gs && idx >= 0) {
+      // (le TeamState garde isAI=false ; on le confie à l'IA)
+      const t = room.gs.teams.find(t2 => !t2.isAI && !room.players.some(p => p.team === t2.id));
+      if (t) t.isAI = true;
+    }
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`COBALT SECTOR — serveur multijoueur sur le port ${PORT}`);
+  console.log(`  LAN      : les joueurs se connectent à ws://<votre-ip>:${PORT}`);
+  console.log(`  En ligne : ouvrez le port ${PORT} sur la machine dédiée`);
+  if (fs.existsSync(DIST)) console.log(`  Client servi sur http://<votre-ip>:${PORT}`);
+});

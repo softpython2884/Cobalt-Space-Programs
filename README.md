@@ -65,7 +65,28 @@ Puis ouvrir http://localhost:5173
 À votre mort : réapparition en corvette à votre station, améliorations conservées, cargaison perdue.
 Le bouclier se recharge sur l'énergie ; sans bouclier ni énergie, la coque ne se régénère plus.
 
-## Architecture (multijoueur-ready)
+## Multijoueur (LAN & en ligne)
+
+Le même serveur couvre les deux usages :
+
+```bash
+npm run server
+```
+
+- **LAN** : lancez le serveur sur un PC du réseau (`npm run server`) et le client
+  avec `npm run dev` — les autres joueurs ouvrent `http://<ip-du-pc>:5173`,
+  entrent `<ip-du-pc>:17771` dans le champ serveur du menu, et rejoignent.
+- **En ligne (machine dédiée)** : `npm run build` puis `npm run server` sur la
+  machine — le serveur sert aussi le jeu buildé sur `http://<ip>:17771`
+  (ouvrez le port). Modes : **Partie rapide** (salon public), **Créer un salon**
+  (code à 5 lettres), **Rejoindre** (code).
+
+Jusqu'à 4 humains ; les couleurs restantes sont remplies par l'IA selon les
+réglages de l'hôte. Serveur **autoritaire** : il exécute la simulation complète
+et diffuse ~12 instantanés/s ; les clients envoient entrées et commandes
+validées. Si un joueur se déconnecte, son équipe passe à l'IA.
+
+## Architecture
 
 ```
 src/

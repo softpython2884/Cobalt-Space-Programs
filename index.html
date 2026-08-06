@@ -144,13 +144,37 @@
           <div class="opt-row"><span class="opt-label">Difficulté</span><div id="opt-diff" class="opt-choices"></div></div>
         </div>
         <button id="btn-start" class="big-btn">LANCER LA PARTIE</button>
+        <div id="menu-mp">
+          <div class="opt-row"><span class="opt-label">Multijoueur</span>
+            <input id="mp-name" class="mp-input" placeholder="Pseudo" maxlength="14" />
+            <input id="mp-addr" class="mp-input" placeholder="serveur:port" />
+          </div>
+          <div class="opt-row"><span class="opt-label"></span>
+            <button id="mp-quick" class="opt-chip">Partie rapide</button>
+            <button id="mp-create" class="opt-chip">Créer un salon</button>
+            <input id="mp-code" class="mp-input" placeholder="CODE" maxlength="5" style="width:74px;text-transform:uppercase" />
+            <button id="mp-join" class="opt-chip">Rejoindre</button>
+          </div>
+        </div>
         <button id="btn-help" class="small-btn">Comment jouer ?</button>
-        <div id="menu-footer">v0.1 — Multijoueur LAN : à venir</div>
+        <div id="menu-footer">v0.2 — Solo, LAN et en ligne</div>
       </div>
       <div id="help-box" class="hidden">
         <h2>COMMENT JOUER</h2>
         <div id="help-content"></div>
         <button id="btn-help-close" class="small-btn">Retour</button>
+      </div>
+    </div>
+
+    <!-- Lobby multijoueur -->
+    <div id="lobby" class="overlay hidden">
+      <div class="overlay-box">
+        <h2>SALON</h2>
+        <div id="lobby-code"></div>
+        <div id="lobby-players"></div>
+        <button id="btn-lobby-start" class="big-btn hidden">LANCER LA PARTIE</button>
+        <div id="lobby-wait" class="panel-hint">En attente de l'hôte…</div>
+        <button id="btn-lobby-leave" class="small-btn">Quitter le salon</button>
       </div>
     </div>
 

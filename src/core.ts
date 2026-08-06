@@ -264,6 +264,8 @@ export interface MatchConfig {
   personaChoice: PersonaId | 'aleatoire';
   starChoice: StarType | 'aleatoire';
   difficulty: 'facile' | 'normal' | 'difficile';
+  humanTeams?: number[];       // multijoueur : équipes contrôlées par des humains
+  multiplayer?: boolean;
 }
 
 export interface StarBody { pos: V2; radius: number; color: number; orbitR: number; orbitSpeed: number; phase: number }
@@ -325,7 +327,7 @@ export interface GameState {
   meteors: Meteor[];           // météores en vol
   meteorT: number;             // prochaine pluie de météores
   colossusBeams: { x1: number; y1: number; x2: number; y2: number; heat: number }[];  // rayons actifs (rendu)
-  plan: PlanState;             // plan d'attaque du joueur
+  plans: Record<number, PlanState>;   // plan d'attaque par équipe (multi-ready)
 
   log: { t: number; text: string; color: string }[];
   alertText: string; alertT: number; alertColor: string;

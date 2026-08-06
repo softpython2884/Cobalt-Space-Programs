@@ -13,6 +13,7 @@ import {
   colossusStatus,
 } from './sim';
 import { fleetShips, missionLabel } from './orders';
+import { cmd } from './bus';
 import { sfx } from './sfx';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -88,6 +89,11 @@ export class HUD {
   onPlanFilter: (f: string) => void = () => {};
   onPlanClear: () => void = () => {};
   onDiploDefend: (team: number) => void = () => {};
+  onMpQuick: (name: string, addr: string) => void = () => {};
+  onMpCreate: (name: string, addr: string) => void = () => {};
+  onMpJoin: (name: string, addr: string, code: string) => void = () => {};
+  onMpStart: () => void = () => {};
+  onMpLeave: () => void = () => {};
   onDiploPropose: (team: number) => void = () => {};
   onDiploBreak: (team: number) => void = () => {};
   onDiploFocus: (team: number, target: number) => void = () => {};
@@ -741,6 +747,18 @@ export class HUD {
     $('btn-plan-toggle').onclick = () => this.onPlanToggle();
     $('btn-plan-obj').onclick = () => this.onPlanObjective();
     $('btn-plan-clear').onclick = () => this.onPlanClear();
+    // multijoueur
+    const addr = $('mp-addr') as HTMLInputElement;
+    addr.value = `${location.hostname}:17771`;
+    const mpName = () => ($('mp-name') as HTMLInputElement).value.trim() || 'Amiral';
+    $('mp-quick').onclick = () => { sfx.ui(); this.onMpQuick(mpName(), addr.value.trim()); };
+    $('mp-create').onclick = () => { sfx.ui(); this.onMpCreate(mpName(), addr.value.trim()); };
+    $('mp-join').onclick = () => {
+      sfx.ui();
+      this.onMpJoin(mpName(), addr.value.trim(), ($('mp-code') as HTMLInputElement).value.trim().toUpperCase());
+    };
+    $('btn-lobby-start').onclick = () => { sfx.buy(); this.onMpStart(); };
+    $('btn-lobby-leave').onclick = () => { sfx.ui(); this.onMpLeave(); };
     // injecte les icônes SVG dans tous les boutons marqués data-ic
     document.querySelectorAll<HTMLElement>('[data-ic]').forEach(el => {
       const ic = ICONS[el.dataset.ic!];
@@ -793,7 +811,7 @@ export class HUD {
             b.className = 'tb-btn'; b.textContent = txt;
             b.onclick = e => {
               e.stopPropagation();
-              const err = tryBuyShip(gs, gs.playerTeam, cls, pilot);
+              const err = cmd('buyShip', { cls, pilot });
               if (err) { sfx.error(); this.flashHint(err); } else { sfx.buy(); this.refreshShop(gs); }
             };
             return b;
@@ -815,7 +833,7 @@ export class HUD {
         const def = WEAPONS[wid];
         const owned = ship.weapons.some(w => w.wid === wid);
         addItem(`<span>${def.nom} <span class="s-desc">${def.desc} · dégâts ${def.dmg} · portée ${def.range}</span></span>`, def.prix,
-          () => tryBuyWeapon(gs, gs.playerTeam, wid), { owned });
+          () => cmd('buyWeapon', { wid }), { owned });
       }
     } else if (this.shopTab === 'ameliorations') {
       for (const u of UPGRADES) {
@@ -823,12 +841,12 @@ export class HUD {
         const maxed = cur >= u.prix.length;
         const price = maxed ? 0 : u.prix[cur];
         addItem(`<span>${u.nom} <b>${'▮'.repeat(cur)}${'▯'.repeat(u.prix.length - cur)}</b> <span class="s-desc">${u.desc}</span></span>`,
-          price, maxed ? null : () => tryBuyUpgrade(gs, gs.playerTeam, u.id), { owned: maxed });
+          price, maxed ? null : () => cmd('buyUpgrade', { id: u.id }), { owned: maxed });
       }
     } else if (this.shopTab === 'station') {
       if (station && station.level < 3) {
         addItem(`<span>Améliorer la station (niv. ${station.level} → ${station.level + 1}) <span class="s-desc">${STATION_LEVEL_DESC[station.level]}</span></span>`,
-          STATION_UPGRADE_PRICE[station.level], () => tryUpgradeStation(gs, gs.playerTeam));
+          STATION_UPGRADE_PRICE[station.level], () => cmd('upgradeStation', {}));
       } else {
         const d = document.createElement('div');
         d.className = 'panel-hint';
@@ -843,7 +861,7 @@ export class HUD {
           addItem(`<span>${def.icon} ${def.nom} <span class="s-desc">${def.desc}</span></span>`, def.prix, null, { lockText: `Station niv. ${def.unlockLevel}` });
         } else {
           addItem(`<span>${def.icon} ${def.nom} <span class="s-desc">${def.desc} · recharge ${def.cd}s</span></span>`, def.prix,
-            () => tryBuyGadget(gs, gs.playerTeam, gid), { owned });
+            () => cmd('buyGadget', { gid }), { owned });
         }
       }
     }
@@ -932,6 +950,26 @@ export class HUD {
   // ================================================================
   //  PAUSE & FIN DE PARTIE
   // ================================================================
+  getCfg(): MatchConfig { return { ...this.cfg }; }
+
+  showLobby(info: { code: string; players: { name: string; team: number; host: boolean }[]; isHost: boolean }) {
+    $('menu').classList.add('hidden');
+    $('lobby').classList.remove('hidden');
+    $('lobby-code').textContent = info.code;
+    const box = $('lobby-players');
+    box.innerHTML = '';
+    for (const pl of info.players) {
+      const row = document.createElement('div');
+      row.className = 'lp-row';
+      row.innerHTML = `<span class="ts-dot" style="background:${TEAM_DEFS[pl.team].cssColor}"></span>` +
+        `<b>${pl.name}</b> — ${TEAM_DEFS[pl.team].name}${pl.host ? ' (hôte)' : ''}`;
+      box.appendChild(row);
+    }
+    $('btn-lobby-start').classList.toggle('hidden', !info.isHost);
+    $('lobby-wait').classList.toggle('hidden', info.isHost);
+  }
+  hideLobby() { $('lobby').classList.add('hidden'); }
+
   showPause(show: boolean) {
     $('pause').classList.toggle('hidden', !show);
   }

@@ -8,6 +8,7 @@ import { newGame } from './world';
 import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
+  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
   colossusLockTick, colossusSalveRelease, colossusWorldBreaker, colossusStatus,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
@@ -20,6 +21,13 @@ import { Renderer3D } from './render3d';
 import { HUD } from './hud';
 import { Input } from './input';
 import { initAudio, playFx, sfx, engineLevel } from './sfx';
+import { Net } from './net';
+import { cmd, setCmdExec } from './bus';
+import { setAllianceCheck } from './entities';
+import {
+  missileFireCmd, salveFireCmd, flagshipOf,
+} from './sim';
+import { areAllied as areAlliedFn } from './core';
 
 const canvas = document.getElementById('c3d') as HTMLCanvasElement;
 const hud = new HUD();
@@ -40,6 +48,14 @@ let lockWarnT = 0;
 let prevNova = -1;
 let planMode: 'off' | 'staging' | 'objective' = 'off';
 let sirenT = 0;
+let net: Net | null = null;
+let mpMode = false;
+let mpLockT = 0;
+let mpSalveTargets: number[] = [];
+let mpFirstSnap = true;
+let curThrust = { x: 0, y: 0 };
+let curFire = false;
+let curFireE = false;
 let introT = 0;                    // intro hypersaut en cours (>0)
 let introStars: { a: number; r: number; sp: number }[] = [];
 let leftHeldT = 0;                 // durée d'appui du clic gauche
@@ -54,8 +70,12 @@ window.addEventListener('keydown', () => initAudio(), { once: true });
 //  DÉMARRAGE / FIN
 // ================================================================
 hud.onStart = cfg => startGame(cfg);
-hud.onReplay = () => { if (lastCfg) startGame({ ...lastCfg, seed: Math.floor(Math.random() * 1e9) }); };
+hud.onReplay = () => {
+  if (mpMode) { leaveMp(); return; }
+  if (lastCfg) startGame({ ...lastCfg, seed: Math.floor(Math.random() * 1e9) });
+};
 hud.onQuitToMenu = () => {
+  if (mpMode) { leaveMp(); return; }
   gs = null; paused = false;
   introT = 0;
   document.getElementById('intro')!.classList.add('hidden');
@@ -63,8 +83,73 @@ hud.onQuitToMenu = () => {
 };
 hud.onResume = () => { paused = false; hud.showPause(false); };
 
+/** Exécution locale des commandes du bus (mode solo). */
+function localExec(name: string, a: any): string | null {
+  if (!gs) return 'Aucune partie';
+  const team = gs.playerTeam;
+  const own = (ids: number[]) => (ids ?? []).filter((id: number) => shipById(gs!, id)?.team === team);
+  switch (name) {
+    case 'buyShip': return tryBuyShip(gs, team, a.cls, !!a.pilot);
+    case 'buyUpgrade': return tryBuyUpgrade(gs, team, a.id);
+    case 'buyWeapon': return tryBuyWeapon(gs, team, a.wid);
+    case 'buyGadget': return tryBuyGadget(gs, team, a.gid);
+    case 'upgradeStation': return tryUpgradeStation(gs, team);
+    case 'place': return placeStructure(gs, team, a.stype, a.pos);
+    case 'planetUp': return tryUpgradePlanet(gs, team, a.planetId);
+    case 'guards': return buyGuards(gs, team, a.targetId);
+    case 'gadget': return activateGadget(gs, team, a.gid, a.targetId);
+    case 'mode': {
+      const f = playerShip(gs);
+      if (!f) return 'Aucun vaisseau';
+      if (a.mode === 'saut') return tryJump(gs, f);
+      toggleMode(gs, f, a.mode);
+      return null;
+    }
+    case 'takeControl': return takeControlNearest(gs);
+    case 'mine': {
+      const f = playerShip(gs);
+      return f && dropMine(gs, f, a.aim) ? null : 'Aucune mine disponible';
+    }
+    case 'order': issueOrder(gs, own(a.ids), a.order); return null;
+    case 'protect': {
+      for (const id of own(a.ids)) {
+        const sh = shipById(gs, id);
+        if (sh) { removeFromFleet(gs, sh); sh.order = { kind: 'orbit', targetId: a.targetId }; }
+      }
+      return null;
+    }
+    case 'fleetCreate': return createFleet(gs, team, own(a.ids)) ? null : 'Sélectionnez au moins 2 vaisseaux';
+    case 'fleetDisband': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) disbandFleet(gs, f.id); return null; }
+    case 'fleetMission': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) setFleetMission(gs, f, a.mission); return null; }
+    case 'fleetFormation': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) f.formation = a.frm; return null; }
+    case 'fleetStance': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) f.stance = a.stance as Stance; return null; }
+    case 'planFilter': gs.plans[team].filter = a.filter; return null;
+    case 'planObjective': gs.plans[team].objective = a.pos; gs.plans[team].armed = false; return null;
+    case 'planArm': gs.plans[team].armed = true; return null;
+    case 'planClear': {
+      gs.plans[team] = { filter: 'tout', objective: null, armed: false };
+      for (const f of gs.fleets) {
+        if (f.team === team && f.mission.kind === 'plan') setFleetMission(gs, f, { kind: 'guard', pos: shipById(gs, f.leaderId)?.pos });
+      }
+      return null;
+    }
+    case 'missileFire': return missileFireCmd(gs, team, a.targetId);
+    case 'salveFire': return salveFireCmd(gs, team, a.targets);
+    case 'breaker': { const f = playerShip(gs); return f ? colossusWorldBreaker(gs, f, a.aim) : 'Aucun vaisseau'; }
+    case 'diploPropose': return proposeAlliance(gs, team, a.team);
+    case 'diploBreak': breakAlliance(gs, team, a.team); return null;
+    case 'diploFocus': return requestFocus(gs, team, a.team, a.target);
+    case 'diploDefend': return requestDefend(gs, team, a.team);
+    case 'offerAccept': acceptOffer(gs, a.id); return null;
+    case 'offerRefuse': refuseOffer(gs, a.id); return null;
+    default: return `Commande inconnue : ${name}`;
+  }
+}
+
 function startGame(cfg: MatchConfig) {
   lastCfg = cfg;
+  mpMode = false;
+  setCmdExec(localExec);
   gs = newGame(cfg);
   hud.bind(gs);
   hud.enterGame();
@@ -159,12 +244,15 @@ function handleInput(dt: number) {
     renderer.camPos.x += dir.x * speed * dt;
     renderer.camPos.y += dir.y * speed * dt;
   } else if (ship && ship.empT <= 0 && ship.jumpT <= 0) {
+    curThrust = { x: dir.x, y: dir.y };
     if (dir.x !== 0 || dir.y !== 0) {
       const l = Math.hypot(dir.x, dir.y);
       const def = SHIP_CLASSES[ship.cls];
       ship.vel.x += (dir.x / l) * def.accel * dt;
       ship.vel.y += (dir.y / l) * def.accel * dt;
     }
+  } else {
+    curThrust = { x: 0, y: 0 };
   }
 
   // ---------- Tir & verrouillage missile ----------
@@ -173,6 +261,14 @@ function handleInput(dt: number) {
   if (!tactical && ship && ship.cls === 'colosse') {
     if (input.down('KeyQ')) {
       const st = colossusLockTick(gs, ship, dt);
+      if (mpMode) {
+        // en multi, la progression du verrouillage est tenue localement
+        mpLockT = Math.min(1.5, mpLockT + dt);
+        ship.lockT = mpLockT;
+        st.progress = mpLockT / 1.5;
+        st.ready = mpLockT >= 1.5;
+      }
+      mpSalveTargets = st.targets;
       renderer.setMultiLock(st);
       if (st.targets.length > 0) {
         lockTickT -= dt;
@@ -181,14 +277,18 @@ function handleInput(dt: number) {
         lockWasReady = st.ready;
       }
     } else {
-      if (ship.lockT > 0) {
-        if (colossusSalveRelease(gs, ship)) sfx.shoot('missile');
-        lockWasReady = false;
+      if ((mpMode ? mpLockT : ship.lockT) >= 1.5 && mpSalveTargets.length > 0) {
+        const err = cmd('salveFire', { targets: mpSalveTargets });
+        if (!err) sfx.shoot('missile');
       }
+      if (!mpMode && ship.lockT > 0) lockCancel(ship);
+      mpLockT = 0;
+      mpSalveTargets = [];
+      lockWasReady = false;
       renderer.setMultiLock(null);
     }
     if (input.pressed('KeyE')) {
-      const err = colossusWorldBreaker(gs, ship, aim);
+      const err = cmd('breaker', { aim });
       if (err) { sfx.error(); hud.flashHint(err); } else sfx.bigBoom();
     }
   }
@@ -200,6 +300,12 @@ function handleInput(dt: number) {
     if (input.down('KeyQ') && hasMissile) {
       locking = true;
       const st = lockTick(gs, ship, aim, dt);
+      if (mpMode && st) {
+        mpLockT = Math.min(1.2, mpLockT + dt);
+        ship.lockT = mpLockT;
+        st.progress = mpLockT / 1.2;
+        st.ready = mpLockT >= 1.2;
+      }
       renderer.setLockState(st);
       if (st && st.targetId >= 0) {
         lockTickT -= dt;
@@ -210,11 +316,17 @@ function handleInput(dt: number) {
         lockWasReady = false;
       }
     } else {
-      if (ship.lockT > 0 && ship.id === gs.playerShipId && !input.down('KeyQ')) {
-        // A relâché : tire si verrouillé
-        if (lockRelease(gs, ship)) sfx.shoot('missile');
+      if (ship.lockT > 0 && !input.down('KeyQ')) {
+        // A relâché : tire si verrouillé (validation côté simulation/serveur)
+        const ready = (mpMode ? mpLockT : ship.lockT) >= 1.2;
+        const tid = ship.lockTargetId;
+        if (ready && tid >= 0) {
+          if (!cmd('missileFire', { targetId: tid })) sfx.shoot('missile');
+        }
+        if (!mpMode) lockCancel(ship);
         lockWasReady = false;
       }
+      mpLockT = 0;
       renderer.setLockState(null);
     }
 
@@ -223,8 +335,9 @@ function handleInput(dt: number) {
       // pour que le premier clic d'un double-clic ne parte pas tout seul
       leftHeldT = input.leftDown ? leftHeldT + dt : 0;
       const holdFire = input.leftDown && !input.dblHold && leftHeldT > 0.14 && !hud.ctxOpen && !buildMode;
-      if (input.down('Space') || holdFire) {
-        fireShipWeapon(gs, ship, 0, aim);
+      curFire = input.down('Space') || holdFire;
+      if (curFire) {
+        if (!mpMode) fireShipWeapon(gs, ship, 0, aim);
         pendingShot = null;
       }
       // clic bref : tir différé de 0,22 s, annulé si un double-clic suit
@@ -232,12 +345,14 @@ function handleInput(dt: number) {
         pendingShot.t -= dt;
         if (input.dblHold || input.leftDown) pendingShot = null;
         else if (pendingShot.t <= 0) {
-          fireShipWeapon(gs, ship, 0, pendingShot.aim);
+          if (mpMode) curFire = true;
+          else fireShipWeapon(gs, ship, 0, pendingShot.aim);
           pendingShot = null;
         }
       }
-      if (input.down('KeyQ') && !hasMissile) fireShipWeapon(gs, ship, 1, aim);  // A en AZERTY
-      if (input.down('KeyE')) fireShipWeapon(gs, ship, 2, aim);
+      if (!mpMode && input.down('KeyQ') && !hasMissile) fireShipWeapon(gs, ship, 1, aim);  // A en AZERTY
+      curFireE = input.down('KeyE');
+      if (!mpMode && curFireE) fireShipWeapon(gs, ship, 2, aim);
     }
   } else if (!ship || tactical) {
     renderer.setLockState(null);
@@ -245,7 +360,7 @@ function handleInput(dt: number) {
   }
 
   // ---------- Minage manuel ----------
-  if (ship && input.down('KeyF')) {
+  if (!mpMode && ship && input.down('KeyF')) {
     const res = playerMine(gs, dt);
     if (res && Math.random() < dt * 3) sfx.mine();
   }
@@ -253,7 +368,7 @@ function handleInput(dt: number) {
   // ---------- Mines larguées ----------
   for (const c of input.middleClicks) {
     const target = renderer.worldFromScreen(c.x, c.y);
-    if (ship && dropMine(gs, ship, target)) sfx.mine();
+    if (!cmd('mine', { aim: target })) sfx.mine();
     else sfx.error();
   }
 
@@ -262,13 +377,8 @@ function handleInput(dt: number) {
   modeKeys.forEach((code, i) => {
     if (!input.pressed(code) || !ship) return;
     const m = MODES[i];
-    if (m.id === 'saut') {
-      const err = tryJump(gs!, ship);
-      if (err) { sfx.error(); hud.flashHint(err); }
-    } else {
-      toggleMode(gs!, ship, m.id as 'croisiere' | 'radar' | 'espion');
-      sfx.ui();
-    }
+    const err = cmd('mode', { mode: m.id });
+    if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
   });
 
   // ---------- Gadgets (( - è _ ç) ----------
@@ -281,10 +391,8 @@ function handleInput(dt: number) {
     if (!gs) return;
     const s = playerShip(gs);
     if (kind === 'mode' && s) {
-      if (id === 'saut') {
-        const err = tryJump(gs, s);
-        if (err) { sfx.error(); hud.flashHint(err); }
-      } else toggleMode(gs, s, id as 'croisiere' | 'radar' | 'espion');
+      const err = cmd('mode', { mode: id });
+      if (err) { sfx.error(); hud.flashHint(err); }
     } else if (kind === 'gadget') {
       activateGadgetSmart(id as GadgetId, renderer!.worldFromScreen(input.mouseX, input.mouseY));
     }
@@ -292,7 +400,7 @@ function handleInput(dt: number) {
 
   // ---------- Divers ----------
   if (input.pressed('KeyC')) {
-    const err = takeControlNearest(gs);
+    const err = cmd('takeControl', {});
     if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
   }
   if (input.pressed('KeyB')) hud.toggleBuild(gs);
@@ -328,8 +436,8 @@ function handleInput(dt: number) {
     planMode = planMode === 'off' ? 'staging' : 'off';
     sfx.ui();
   }
-  if (input.pressed('Enter') && gs.plan.objective) {
-    gs.plan.armed = true;
+  if (input.pressed('Enter') && gs.plans[gs.playerTeam].objective) {
+    cmd('planArm', {});
     hud.flashHint('PLAN EXÉCUTÉ — toutes les flottes avancent sur l\'objectif.');
     sfx.buy();
   }
@@ -344,7 +452,7 @@ function handleInput(dt: number) {
     if (hud.ctxOpen) { hud.closeCtxMenu(); continue; }
     if (buildMode) {
       const pos = renderer.worldFromScreen(c.x, c.y);
-      const err = placeStructure(gs, gs.playerTeam, buildMode, pos);
+      const err = cmd('place', { stype: buildMode, pos });
       if (err) { sfx.error(); hud.flashHint(err); }
       else { sfx.buy(); buildMode = null; }
       continue;
@@ -410,8 +518,7 @@ function handleInput(dt: number) {
     if (planMode !== 'off') {
       const pos = renderer.worldFromScreen(c.x, c.y);
       if (planMode === 'objective') {
-        gs.plan.objective = pos;
-        gs.plan.armed = false;
+        cmd('planObjective', { pos });
         planMode = 'staging';
         hud.flashHint('Objectif défini — ENTRÉE pour lancer l\'assaut.');
         sfx.buy();
@@ -430,10 +537,7 @@ function handleInput(dt: number) {
           hud.flashHint('Sélectionnez une flotte ARMÉE pour lui donner une position de plan.');
           sfx.error();
         } else {
-          for (const fid of fleets) {
-            const f = gs.fleets.find(f2 => f2.id === fid)!;
-            setFleetMission(gs, f, { kind: 'plan', pos: { ...pos } });
-          }
+          for (const fid of fleets) cmd('fleetMission', { fleetId: fid, mission: { kind: 'plan', pos } });
           sfx.ui();
         }
       }
@@ -470,8 +574,8 @@ function handleInput(dt: number) {
     if (!gs) return;
     const ids = gs.selection.filter(id => id !== gs!.playerShipId);
     if (ids.length < 2) { hud.flashHint('Sélectionnez au moins 2 vaisseaux (hors amiral).'); sfx.error(); return; }
-    const f = createFleet(gs, gs.playerTeam, ids);
-    if (f) sfx.buy();
+    const err = cmd('fleetCreate', { ids });
+    if (!err) sfx.buy(); else { sfx.error(); hud.flashHint(err); }
   };
   hud.onFleetDisband = () => {
     if (!gs) return;
@@ -481,7 +585,7 @@ function handleInput(dt: number) {
       if (s?.fleetId != null && gs.fleets.find(f => f.id === s.fleetId)?.team === gs.playerTeam) fleetIds.add(s.fleetId);
     }
     if (fleetIds.size === 0) { hud.flashHint('Sélectionnez une flotte à dissoudre.'); return; }
-    for (const id of fleetIds) disbandFleet(gs, id);
+    for (const id of fleetIds) cmd('fleetDisband', { fleetId: id });
     sfx.ui();
   };
   hud.onFormation = frm => {
@@ -490,7 +594,7 @@ function handleInput(dt: number) {
     for (const id of gs.selection) {
       const s = shipById(gs, id);
       const f = s?.fleetId != null ? gs.fleets.find(f => f.id === s.fleetId) : null;
-      if (f && f.team === gs.playerTeam) { f.formation = frm as any; done = true; }
+      if (f && f.team === gs.playerTeam) { cmd('fleetFormation', { fleetId: f.id, frm }); done = true; }
     }
     if (done) sfx.ui(); else hud.flashHint('Sélectionnez une flotte pour changer sa formation.');
   };
@@ -514,10 +618,7 @@ function handleInput(dt: number) {
       }
     }
     if (fleets.size === 0) { hud.flashHint('Sélectionnez une flotte pour lui assigner une mission.'); sfx.error(); return; }
-    for (const fid of fleets) {
-      const f = gs.fleets.find(f => f.id === fid)!;
-      setFleetMission(gs, f, { kind: kind as OrderKind });
-    }
+    for (const fid of fleets) cmd('fleetMission', { fleetId: fid, mission: { kind } });
     sfx.buy();
   };
 }
@@ -544,7 +645,7 @@ function activateGadgetSmart(gid: GadgetId, aim: V2) {
       if (d < bd) { bd = d; targetId = pl.id; }
     }
   }
-  const err = activateGadget(gs, gs.playerTeam, gid, targetId);
+  const err = cmd('gadget', { gid, targetId });
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
 }
 
@@ -569,36 +670,36 @@ function openOrderMenu(sx: number, sy: number) {
     // cibles ennemies (jamais les alliés)
     const hostile = (team: number) => team !== gs!.playerTeam && !areAllied(gs!, gs!.playerTeam, team);
     if (pickedShip && hostile(pickedShip.team)) {
-      items.push({ label: `Attaquer ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedShip.id }) });
+      items.push({ label: `Attaquer ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'crosshair', cb: () => cmd('order', { ids: orderables, order: { kind: 'attack', targetId: pickedShip.id } }) });
     }
     if (pickedStruct && hostile(pickedStruct.team)) {
-      items.push({ label: 'Attaquer la structure', ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedStruct.id }) });
+      items.push({ label: 'Attaquer la structure', ic: 'crosshair', cb: () => cmd('order', { ids: orderables, order: { kind: 'attack', targetId: pickedStruct.id } }) });
     }
     if (pickedPlanet && pickedPlanet.owner >= 0 && hostile(pickedPlanet.owner)) {
-      items.push({ label: `Attaquer la colonie ${pickedPlanet.name}`, ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedPlanet.id }) });
+      items.push({ label: `Attaquer la colonie ${pickedPlanet.name}`, ic: 'crosshair', cb: () => cmd('order', { ids: orderables, order: { kind: 'attack', targetId: pickedPlanet.id } }) });
     }
     // escorte d'un allié / d'une flotte
     if (pickedShip && pickedShip.team === gs.playerTeam && !orderables.includes(pickedShip.id)) {
-      items.push({ label: `Escorter ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'shield', cb: () => issueOrder(gs!, orderables, { kind: 'escort', targetId: pickedShip.id }) });
+      items.push({ label: `Escorter ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'shield', cb: () => cmd('order', { ids: orderables, order: { kind: 'escort', targetId: pickedShip.id } }) });
     }
     // minage
     if (pickedRoid || pickedCloud) {
       const id = (pickedRoid ?? pickedCloud)!.id;
-      items.push({ label: 'Miner ici', ic: 'pick', cb: () => issueOrder(gs!, orderables, { kind: 'mine', targetId: id }) });
+      items.push({ label: 'Miner ici', ic: 'pick', cb: () => cmd('order', { ids: orderables, order: { kind: 'mine', targetId: id } }) });
     }
     // planètes
     if (pickedPlanet) {
       if (pickedPlanet.owner < 0) {
         const hasTransporter = orderables.some(id => SHIP_CLASSES[shipById(gs!, id)!.cls].canColonize);
         if (hasTransporter) {
-          items.push({ label: `Coloniser ${pickedPlanet.name}`, ic: 'flag', cb: () => issueOrder(gs!, orderables, { kind: 'colonize', targetId: pickedPlanet.id }) });
+          items.push({ label: `Coloniser ${pickedPlanet.name}`, ic: 'flag', cb: () => cmd('order', { ids: orderables, order: { kind: 'colonize', targetId: pickedPlanet.id } }) });
         }
       } else if (pickedPlanet.owner === gs.playerTeam) {
-        items.push({ label: `Commercer avec ${pickedPlanet.name}`, ic: 'route', cb: () => issueOrder(gs!, orderables, { kind: 'trade', targetId: pickedPlanet.id }) });
+        items.push({ label: `Commercer avec ${pickedPlanet.name}`, ic: 'route', cb: () => cmd('order', { ids: orderables, order: { kind: 'trade', targetId: pickedPlanet.id } }) });
       }
     }
     if (pickedWreck) {
-      items.push({ label: `Récupérer l'épave`, ic: 'box', cb: () => issueOrder(gs!, orderables, { kind: 'salvage', targetId: pickedWreck.id }) });
+      items.push({ label: `Récupérer l'épave`, ic: 'box', cb: () => cmd('order', { ids: orderables, order: { kind: 'salvage', targetId: pickedWreck.id } }) });
     }
     // toujours possibles
     // protéger un corps possédé : les vaisseaux armés quittent leur flotte et montent la garde
@@ -611,20 +712,12 @@ function openOrderMenu(sx: number, sy: number) {
     if (bodyToProtect && armedSel.length > 0) {
       items.push({
         label: 'Protéger ce corps', ic: 'shield',
-        cb: () => {
-          for (const id of armedSel) {
-            const sh = shipById(gs!, id);
-            if (!sh) continue;
-            removeFromFleet(gs!, sh);
-            sh.order = { kind: 'orbit', targetId: bodyToProtect.id };
-          }
-          sfx.ui();
-        },
+        cb: () => { cmd('protect', { ids: armedSel, targetId: bodyToProtect.id }); sfx.ui(); },
       });
     }
-    items.push({ label: 'Déplacer ici', ic: 'arrow', cb: () => issueOrder(gs!, orderables, { kind: 'move', pos }) });
-    items.push({ label: 'Garder la position', ic: 'shield', cb: () => issueOrder(gs!, orderables, { kind: 'guard', pos }) });
-    items.push({ label: 'Retour à la station', ic: 'home', cb: () => issueOrder(gs!, orderables, { kind: 'dock' }) });
+    items.push({ label: 'Déplacer ici', ic: 'arrow', cb: () => cmd('order', { ids: orderables, order: { kind: 'move', pos } }) });
+    items.push({ label: 'Garder la position', ic: 'shield', cb: () => cmd('order', { ids: orderables, order: { kind: 'guard', pos } }) });
+    items.push({ label: 'Retour à la station', ic: 'home', cb: () => cmd('order', { ids: orderables, order: { kind: 'dock' } }) });
   }
   // recruter une garde orbitale / renforcer la colonie d'un corps possédé
   const guardable = (pickedStruct && pickedStruct.team === gs.playerTeam)
@@ -636,7 +729,7 @@ function openOrderMenu(sx: number, sy: number) {
     items.push({
       label: `Recruter une garde orbitale (${cost})`, ic: 'orbit',
       cb: () => {
-        const err = buyGuards(gs!, gs!.playerTeam, guardable.id);
+        const err = cmd('guards', { targetId: guardable.id });
         if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
       },
     });
@@ -645,7 +738,7 @@ function openOrderMenu(sx: number, sy: number) {
     items.push({
       label: `Renforcer la colonie (${PLANET_UPGRADE_COST})`, ic: 'plus',
       cb: () => {
-        const err = tryUpgradePlanet(gs!, gs!.playerTeam, pickedPlanet.id);
+        const err = cmd('planetUp', { planetId: pickedPlanet.id });
         if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
       },
     });
@@ -699,61 +792,65 @@ function computeHint(): string {
 hud.onBuildPick = stype => { buildMode = stype; };
 hud.onDiploPropose = team => {
   if (!gs) return;
-  const err = proposeAlliance(gs, gs.playerTeam, team);
+  const err = cmd('diploPropose', { team });
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
 };
 hud.onDiploBreak = team => {
   if (!gs) return;
-  breakAlliance(gs, gs.playerTeam, team);
+  cmd('diploBreak', { team });
   sfx.ui();
 };
 hud.onDiploFocus = (team, target) => {
   if (!gs) return;
-  const err = requestFocus(gs, gs.playerTeam, team, target);
+  const err = cmd('diploFocus', { team, target });
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
 };
-hud.onOfferAccept = id => { if (gs) { acceptOffer(gs, id); sfx.buy(); } };
+hud.onOfferAccept = id => { if (gs) { cmd('offerAccept', { id }); sfx.buy(); } };
 hud.onStance = stance => {
   if (!gs) return;
   let n = 0;
   for (const id of gs.selection) {
     const sh = shipById(gs, id);
     const f = sh?.fleetId != null ? gs.fleets.find(f2 => f2.id === sh.fleetId) : null;
-    if (f && f.team === gs.playerTeam) { f.stance = stance as Stance; n++; }
+    if (f && f.team === gs.playerTeam) { cmd('fleetStance', { fleetId: f.id, stance }); n++; }
   }
   if (n > 0) { hud.flashHint(`Doctrine appliquée : ${stance === 'feu' ? 'attaque à vue' : stance === 'defense' ? 'défense' : 'ne pas tirer'}.`); sfx.ui(); }
   else hud.flashHint('Sélectionnez une flotte pour changer sa doctrine.');
 };
 hud.onPlanToggle = () => { planMode = planMode === 'off' ? 'staging' : 'off'; sfx.ui(); };
 hud.onPlanObjective = () => { planMode = 'objective'; sfx.ui(); };
-hud.onPlanFilter = f => { if (gs) { gs.plan.filter = f as PlanFilter; sfx.ui(); } };
+hud.onPlanFilter = f => { if (gs) { cmd('planFilter', { filter: f }); sfx.ui(); } };
 hud.onPlanClear = () => {
   if (!gs) return;
-  gs.plan.objective = null;
-  gs.plan.armed = false;
+  cmd('planClear', {});
   planMode = 'off';
-  for (const f of gs.fleets) {
-    if (f.team === gs.playerTeam && f.mission.kind === 'plan') {
-      const lead = shipById(gs, f.leaderId);
-      setFleetMission(gs, f, { kind: 'guard', pos: lead ? { ...lead.pos } : undefined });
-    }
-  }
   hud.flashHint('Plan effacé.');
   sfx.ui();
 };
 hud.onDiploDefend = team => {
   if (!gs) return;
-  const err = requestDefend(gs, gs.playerTeam, team);
+  const err = cmd('diploDefend', { team });
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
 };
-hud.onOfferRefuse = id => { if (gs) { refuseOffer(gs, id); sfx.ui(); } };
+hud.onOfferRefuse = id => { if (gs) { cmd('offerRefuse', { id }); sfx.ui(); } };
 
 function frame(now: number) {
   requestAnimationFrame(frame);
   const elapsed = Math.min(0.1, (now - lastTime) / 1000);
   lastTime = now;
 
-  if (!gs || !renderer) { input.endFrame(); return; }
+  // multijoueur : applique le dernier instantané du serveur
+  if (mpMode && net) {
+    const snap = net.poll();
+    if (snap) applySnap(snap);
+  }
+
+  if (!gs || !renderer) {
+    // multijoueur : l'intro tourne en attendant le premier instantané
+    if (mpMode && introT > 0) { introT -= elapsed; drawIntro(elapsed); }
+    input.endFrame();
+    return;
+  }
 
   // intro hypersaut : le monde attend la sortie du saut
   if (introT > 0) {
@@ -773,7 +870,18 @@ function frame(now: number) {
   // après la fin de partie, seuls les boutons de l'écran de fin restent actifs
   if (gs.status === 'playing') handleInput(elapsed);
 
-  if (!paused && gs.status === 'playing') {
+  if (mpMode) {
+    // le serveur simule ; ici : estime légère entre deux instantanés
+    if (gs.status === 'playing') {
+      for (const sh of gs.ships) { sh.pos.x += sh.vel.x * elapsed; sh.pos.y += sh.vel.y * elapsed; }
+      for (const pr of gs.projectiles) { pr.pos.x += pr.vel.x * elapsed; pr.pos.y += pr.vel.y * elapsed; }
+      gs.t += elapsed;
+      if (gs.alertT > 0) gs.alertT -= elapsed;
+      // envoi des entrées (30 Hz max)
+      const aimNow = renderer.worldFromScreen(input.mouseX, input.mouseY);
+      net?.sendInput({ thrust: curThrust, aim: aimNow, fire: curFire, fireE: curFireE, mineF: input.down('KeyF') });
+    }
+  } else if (!paused && gs.status === 'playing') {
     accumulator += elapsed;
     while (accumulator >= SIM_DT) {
       simTick(gs, SIM_DT);
@@ -846,14 +954,14 @@ function frame(now: number) {
     const stagings = gs.fleets
       .filter(f => f.team === gs!.playerTeam && f.mission.kind === 'plan' && f.mission.pos)
       .map(f => f.mission.pos!);
-    renderer.setPlanMarkers(stagings, gs.plan.objective, gs.plan.armed);
-    hud.setPlanUI(planMode, gs.plan.armed,
+    renderer.setPlanMarkers(stagings, gs.plans[gs.playerTeam].objective, gs.plans[gs.playerTeam].armed);
+    hud.setPlanUI(planMode, gs.plans[gs.playerTeam].armed,
       planMode === 'objective' ? 'Clic droit : placer l\'objectif'
       : planMode === 'staging' ? `Clic droit : position de flotte · ${stagings.length} posée(s) · ENTRÉE : GO`
-      : gs.plan.armed ? 'PLAN EN COURS' : '');
+      : gs.plans[gs.playerTeam].armed ? 'PLAN EN COURS' : '');
   } else {
     renderer.setPlanMarkers([], null, false);
-    hud.setPlanUI(planMode, gs.plan.armed, '');
+    hud.setPlanUI(planMode, gs.plans[gs.playerTeam].armed, '');
   }
 
   const aim = renderer.worldFromScreen(input.mouseX, input.mouseY);
@@ -874,6 +982,107 @@ function frame(now: number) {
   input.endFrame();
 }
 
+// ================================================================
+//  MULTIJOUEUR — connexion, lobby, instantanés
+// ================================================================
+function mpFooter(msg: string) {
+  const f = document.getElementById('menu-footer');
+  if (f) f.textContent = msg;
+}
+
+function applySnap(snap: GameState) {
+  const prevSel = gs?.selection ?? [];
+  gs = snap;
+  hud.bind(gs);
+  setAllianceCheck((a, b) => areAlliedFn(gs!, a, b));
+  gs.selection = prevSel.filter(id => gs!.ships.some(sh => sh.id === id));
+  const flag = gs.ships.find(sh => sh.alive && sh.isFlagship && sh.team === gs!.playerTeam);
+  gs.playerShipId = flag?.id ?? -1;
+  // conserve la progression de verrouillage locale (visuel)
+  if (flag && input.down('KeyQ')) flag.lockT = mpLockT;
+  if (mpFirstSnap && renderer && flag) {
+    renderer.camPos = { ...flag.pos };
+    mpFirstSnap = false;
+  }
+}
+
+function leaveMp(msg = '') {
+  net?.leave();
+  net = null;
+  mpMode = false;
+  gs = null;
+  paused = false;
+  introT = 0;
+  mpFirstSnap = true;
+  document.getElementById('intro')!.classList.add('hidden');
+  hud.hideLobby();
+  hud.showMenu();
+  if (msg) mpFooter(msg);
+}
+
+async function mpConnect(addr: string): Promise<boolean> {
+  net = new Net();
+  net.onLobby = info => hud.showLobby(info);
+  net.onStart = () => startNetGame();
+  net.onError = msg => mpFooter(msg);
+  net.onHint = msg => hud.flashHint(msg);
+  net.onClosed = () => leaveMp('Connexion au serveur perdue.');
+  try {
+    await net.connect(addr);
+    return true;
+  } catch (e) {
+    mpFooter((e as Error).message);
+    net = null;
+    return false;
+  }
+}
+
+function startNetGame() {
+  mpMode = true;
+  mpFirstSnap = true;
+  setCmdExec((n, a) => { net?.cmd(n, a); return null; });
+  gs = null;
+  overShown = false;
+  paused = false;
+  buildMode = null;
+  planMode = 'off';
+  visibleSet = new Set();
+  visT = 0;
+  lockWasReady = false;
+  mpLockT = 0;
+  input.endFrame();
+  if (!renderer) renderer = new Renderer3D(canvas);
+  else renderer.reset();
+  renderer.camH = 130;
+  hud.hideLobby();
+  hud.enterGame();
+  hud.hideGameOver();
+  introT = 2.6;
+  introStars = Array.from({ length: 260 }, () => ({
+    a: Math.random() * Math.PI * 2,
+    r: 20 + Math.random() * 500,
+    sp: 0.6 + Math.random() * 1.6,
+  }));
+  document.getElementById('intro')!.classList.remove('hidden');
+  sfx.hyper();
+}
+
+hud.onMpQuick = async (name, addr) => {
+  mpFooter('Connexion…');
+  if (await mpConnect(addr)) { net!.quick(name, hud.getCfg()); mpFooter('Connecté — salon public.'); }
+};
+hud.onMpCreate = async (name, addr) => {
+  mpFooter('Connexion…');
+  if (await mpConnect(addr)) { net!.create(name, hud.getCfg()); mpFooter('Salon créé.'); }
+};
+hud.onMpJoin = async (name, addr, code) => {
+  if (!code) { mpFooter('Entrez le code du salon.'); return; }
+  mpFooter('Connexion…');
+  if (await mpConnect(addr)) { net!.join(code, name); }
+};
+hud.onMpStart = () => net?.start();
+hud.onMpLeave = () => leaveMp();
+
 hud.showMenu();
 requestAnimationFrame(frame);
 
@@ -882,6 +1091,9 @@ requestAnimationFrame(frame);
   get gs() { return gs; },
   get hud() { return hud; },
   get renderer() { return renderer; },
+  get net() { return net; },
+  /** Pompe manuelle de frames (tests sans rAF). */
+  pump(n = 1) { for (let i = 0; i < n; i++) frame(performance.now()); return gs ? `t=${gs.t.toFixed(1)}` : 'pas de gs'; },
   step(seconds = 1) {
     if (!gs || !renderer) return 'aucune partie en cours';
     const n = Math.max(1, Math.floor(seconds / SIM_DT));

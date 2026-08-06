@@ -292,3 +292,15 @@ h2 { letter-spacing: 4px; margin-bottom: 18px; }
   position: absolute; bottom: 12%; left: 50%; transform: translateX(-50%);
   color: #9fdcff; font-size: 13px; letter-spacing: 6px; animation: blink 1.2s infinite;
 }
+
+
+/* ---------- Multijoueur ---------- */
+#menu-mp { border-top: 1px solid var(--panel-border); margin-top: 14px; padding-top: 12px; text-align: left; }
+.mp-input {
+  background: #0c1626; border: 1px solid var(--panel-border); color: var(--txt);
+  border-radius: 4px; padding: 5px 8px; font-size: 12px; width: 130px;
+}
+.mp-input:focus { outline: none; border-color: var(--accent); }
+#lobby-code { font-size: 30px; letter-spacing: 10px; color: var(--accent); font-family: Consolas; margin-bottom: 14px; }
+#lobby-players { text-align: left; margin-bottom: 18px; }
+#lobby-players .lp-row { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 5px 0; }

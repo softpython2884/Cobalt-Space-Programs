@@ -39,6 +39,8 @@ function makeMap(rng: () => number, starType: StarType): MapInfo {
   };
 }
 
+const mkPlan = () => ({ filter: 'tout' as const, objective: null, armed: false });
+
 export function newGame(cfg: MatchConfig): GameState {
   resetFleetCounter();
   const rng = makeRng(cfg.seed);
@@ -59,16 +61,18 @@ export function newGame(cfg: MatchConfig): GameState {
     storms: [], stormT: 480 + rng() * 120,
     meteors: [], meteorT: 480,
     colossusBeams: [],
-    plan: { filter: 'tout', objective: null, armed: false },
+    plans: { 0: mkPlan(), 1: mkPlan(), 2: mkPlan(), 3: mkPlan() },
     log: [], alertText: '', alertT: 0, alertColor: '#ff4b4b',
   };
 
-  // ---------- Équipes ----------
+  // ---------- Équipes (solo : joueur + IA ; multi : humains + IA de remplissage) ----------
+  const humans = cfg.humanTeams && cfg.humanTeams.length > 0 ? cfg.humanTeams : [cfg.playerColorIdx];
+  gs.playerTeam = humans[0];
   const aiTeamIdx: number[] = [];
-  for (let i = 0; i < 4 && aiTeamIdx.length < cfg.aiCount; i++) {
-    if (i !== cfg.playerColorIdx) aiTeamIdx.push(i);
+  for (let i = 0; i < 4 && aiTeamIdx.length < cfg.aiCount && humans.length + aiTeamIdx.length < 4; i++) {
+    if (!humans.includes(i)) aiTeamIdx.push(i);
   }
-  const active = [cfg.playerColorIdx, ...aiTeamIdx];
+  const active = [...humans, ...aiTeamIdx];
   gs.activeTeams = active;
 
   for (let i = 0; i < 4; i++) {
@@ -78,7 +82,7 @@ export function newGame(cfg: MatchConfig): GameState {
     const team: TeamState = {
       id: i, name: def.name, color: def.color, cssColor: def.cssColor,
       credits: START_CREDITS,
-      isAI: i !== cfg.playerColorIdx,
+      isAI: !humans.includes(i),
       persona, alive: isActive, stationId: -1,
       upgrades: {}, gadgets: ['fumee'], gadgetCd: {},
       secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, score: 0, kills: 0, colossusUsed: false,
