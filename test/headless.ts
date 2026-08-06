@@ -48,7 +48,8 @@ function runMatch(star: StarType | 'aleatoire', seed: number, minutes: number, l
   }
   console.log(`  pics : ${stats.maxShips} vaisseaux · ${stats.pirates} pirates · ${stats.fleetsSeen} flottes`);
   check(stats.pirates > 0 || minutes < 3, 'aucun pirate apparu');
-  check(gs.ships.some(s => s.alive), 'plus aucun vaisseau vivant');
+  // une supernova qui a tout consumé est une fin valide sans survivants
+  check(gs.supernovaWave >= 0 || gs.ships.some(s => s.alive), 'plus aucun vaisseau vivant');
   return gs;
 }
 

@@ -8,7 +8,7 @@ import { makeShip, nearestShip, threatAround, canDetect, isEnemy } from './entit
 import { createFleet, setFleetMission, fleetShips } from './orders';
 import {
   tryBuyShip, tryUpgradeStation, canPlaceStructure, placeStructure, teamScore,
-  proposeAlliance, requestFocus,
+  proposeAlliance, requestFocus, requestDefend,
 } from './sim';
 
 // ================================================================
@@ -25,7 +25,7 @@ export function spawnPirateRaid(gs: GameState) {
     raider.order = { ...IDLE };
     gs.fx.push({ type: 'saut', pos: { ...p } });
   }
-  addLog(gs, `⚠ Raid pirate détecté (${size} raiders) !`, '#9aa0a8');
+  addLog(gs, `Raid pirate détecté (${size} raiders) !`, '#9aa0a8');
   setAlert(gs, 'RAID PIRATE DÉTECTÉ', 3);
 }
 
@@ -117,6 +117,15 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     for (const w of [...warships, ...(flagship ? [flagship] : [])]) {
       if (w.order.kind !== 'attack' || gs.rng() < 0.3) w.order = { kind: 'attack', targetId: baseThreat.id };
     }
+    // appelle ses alliés à la rescousse (dont le joueur)
+    if (gs.rng() < 0.3) {
+      for (const ally of gs.activeTeams) {
+        if (ally !== teamId && gs.teams[ally].alive && areAllied(gs, teamId, ally)) {
+          requestDefend(gs, teamId, ally);
+          break;
+        }
+      }
+    }
   }
 
   // ---------- 2. ÉCONOMIE : effectifs voulus ----------
@@ -158,9 +167,12 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     if (team.credits - price > reserve * 0.5) tryUpgradeStation(gs, teamId);
   }
 
-  // ---------- 4. CONSTRUCTION ----------
-  if (team.credits > 900 && gs.rng() < 0.25) {
-    const stype = gs.rng() < 0.45 ? 'mine' : gs.rng() < 0.7 ? 'avantposte' : 'satellite';
+  // ---------- 4. CONSTRUCTION (cadence selon la difficulté, avant-postes plafonnés) ----------
+  if (team.credits > 900 && gs.rng() < 0.25 * tune.buildMult) {
+    const myOutposts = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'avantposte').length;
+    const outpostCap = 1 + Math.floor(minute / 7);
+    let stype: 'mine' | 'avantposte' | 'satellite' = gs.rng() < 0.5 ? 'mine' : gs.rng() < 0.75 ? 'avantposte' : 'satellite';
+    if (stype === 'avantposte' && myOutposts >= outpostCap) stype = 'mine';
     for (let tries = 0; tries < 6; tries++) {
       const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 120 + gs.rng() * 260));
       if (!canPlaceStructure(gs, teamId, stype, pos)) { placeStructure(gs, teamId, stype, pos); break; }
@@ -278,7 +290,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number): number | null {
   const tune = DIFF_TUNING[gs.cfg.difficulty];
   if (minute < tune.harassMin) return null;
-  const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id));
+  // période de grâce : l'IA laisse le joueur s'installer avant de le viser
+  const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id)
+    && !(id === gs.playerTeam && !gs.teams[id].isAI && minute < tune.playerGraceMin));
   if (enemies.length === 0) return null;
 
   // cible : 60 % l'équipe la plus faible (au score), 40 % la plus proche — évite

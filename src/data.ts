@@ -143,6 +143,7 @@ export const STRUCTS: Record<StructType, StructDef> = {
   mine: { stype: 'mine', nom: 'Mine spatiale', hull: 200, shield: 40, radius: 10, sensor: 140, prix: 400, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Revenu passif si placée près d\'astéroïdes.' },
   satellite: { stype: 'satellite', nom: 'Satellite', hull: 60, shield: 20, radius: 5, sensor: 420, prix: 150, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Œil lointain, très fragile.' },
   labo: { stype: 'labo', nom: 'Laboratoire', hull: 260, shield: 140, radius: 11, sensor: 180, prix: 700, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Gros revenus, mais doit être bâti DANS un nuage électrique.' },
+  depot: { stype: 'depot', nom: 'Dépôt', hull: 320, shield: 80, radius: 10, sensor: 160, prix: 350, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Vos mineurs y déchargent sur place ; la valeur s\'écoule à débit limité.' },
 };
 
 // ---------- Économie ----------
@@ -153,6 +154,11 @@ export const PLANET_INCOME_PERIOD = 30;
 export const MINE_INCOME = 30;            // crédits / 12 s si près d'astéroïdes
 export const LABO_INCOME = 70;            // crédits / 10 s si dans un nuage électrique
 export const LABO_INCOME_PERIOD = 10;
+export const DEPOT_RATE = 3;              // crédits / s max écoulés par un dépôt
+export const ALLY_TRADE_MULT = 3;         // commerce avec une colonie alliée : x3
+export const ALLIANCE_DURATION = 900;     // 15 min, renouvelable dans les 2 dernières
+export const PLANET_UPGRADE_COST = 150;
+export const PLANET_UPGRADE_HP = 260;     // +vie de colonie par niveau (max 1200)
 export const MINE_INCOME_PERIOD = 12;
 export const PASSIVE_INCOME = 12;         // crédits / 10 s (station vivante)
 export const PASSIVE_INCOME_PERIOD = 10;
@@ -287,9 +293,9 @@ export const MINING_RANGE = 34;
 export const MINING_RATE = 6;              // unités/s
 export const DIFF_MULT = { facile: 0.5, normal: 1.0, difficile: 1.45 };
 // Réglages IA par difficulté : effectifs militaires, agressivité, délais de grâce
-export interface DiffTuning { warshipMult: number; aggroMult: number; harassMin: number; siegeMin: number; thinkMult: number; lateRamp: number }
+export interface DiffTuning { warshipMult: number; aggroMult: number; harassMin: number; siegeMin: number; thinkMult: number; lateRamp: number; playerGraceMin: number; buildMult: number }
 export const DIFF_TUNING: Record<'facile' | 'normal' | 'difficile', DiffTuning> = {
-  facile: { warshipMult: 0.55, aggroMult: 0.55, harassMin: 3.5, siegeMin: 10, thinkMult: 1.6, lateRamp: 0.04 },
-  normal: { warshipMult: 1.0, aggroMult: 1.0, harassMin: 1.5, siegeMin: 6, thinkMult: 1.0, lateRamp: 0.08 },
-  difficile: { warshipMult: 1.25, aggroMult: 1.2, harassMin: 1.0, siegeMin: 5, thinkMult: 0.8, lateRamp: 0.1 },
+  facile: { warshipMult: 0.55, aggroMult: 0.55, harassMin: 5, siegeMin: 12, thinkMult: 1.6, lateRamp: 0.04, playerGraceMin: 9, buildMult: 0.35 },
+  normal: { warshipMult: 1.0, aggroMult: 1.0, harassMin: 1.5, siegeMin: 6, thinkMult: 1.0, lateRamp: 0.08, playerGraceMin: 4, buildMult: 1.0 },
+  difficile: { warshipMult: 1.25, aggroMult: 1.2, harassMin: 1.0, siegeMin: 5, thinkMult: 0.8, lateRamp: 0.1, playerGraceMin: 1.5, buildMult: 1.2 },
 };

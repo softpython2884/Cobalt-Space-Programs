@@ -61,7 +61,7 @@ export function makeStructure(gs: GameState, team: number, stype: StructType, po
     pos: { ...pos }, radius: def.radius,
     hull: def.hull, hullMax: def.hull,
     shield: def.shield, shieldMax: def.shield,
-    level: 1, fireCd: 0, incomeT: 0, lastDmgT: -999, alive: true,
+    level: 1, fireCd: 0, incomeT: 0, lastDmgT: -999, pendingCredits: 0, alive: true,
   };
   gs.structures.push(st);
   return st;
@@ -162,6 +162,7 @@ export function signature(s: Ship): number {
   let sig = 1;
   if (s.mode === 'espion') sig *= 0.35;
   if (s.mode === 'radar') sig *= 2;
+  if (s.smokeT > 0) sig *= 0.12;   // caché dans un écran de fumée
   if (s.cloakT > 0) sig = 0;
   return sig;
 }

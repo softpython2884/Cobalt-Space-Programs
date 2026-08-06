@@ -56,7 +56,7 @@ export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider';
 export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile';
 export type MineType = 'frag' | 'emp' | 'aimant';
-export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo';
+export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo' | 'depot';
 export type PlanetType = 'tellurique' | 'glace' | 'lave' | 'gazeuse' | 'oceanique' | 'desert';
 export type StarType = 'sol_jaune' | 'sol_rouge' | 'sol_bleu' | 'sol_violet' | 'naine_blanche' | 'binaire' | 'triple' | 'neutron' | 'trou_noir' | 'supergeante';
 export type PersonaId = 'agressif' | 'econome' | 'opportuniste' | 'defensif' | 'equilibre';
@@ -118,6 +118,7 @@ export interface Structure {
   fireCd: number;
   incomeT: number;
   lastDmgT: number;               // le bouclier ne régénère qu'après 10 s sans dégât
+  pendingCredits: number;         // dépôt : valeur stockée, écoulée à débit limité
   alive: boolean;
 }
 
@@ -233,7 +234,7 @@ export interface StormCloud {
 export interface DiploOffer {
   id: number;
   from: number; to: number;
-  type: 'alliance' | 'target';
+  type: 'alliance' | 'target' | 'defend';
   target?: number;        // équipe à cibler (type 'target')
   expiresT: number;       // temps sim d'expiration
 }
@@ -305,6 +306,7 @@ export interface GameState {
   supernovaWave: number;       // rayon de l'onde (-1 = pas déclenchée)
 
   alliances: Set<string>;      // paires alliées (allyKey)
+  allianceSince: Record<string, number>;  // temps sim de formation (expire après 15 min)
   diploOffers: DiploOffer[];   // propositions en attente (surtout vers le joueur)
   focusTargets: Record<number, number>;  // équipe -> cible convenue avec un allié
 
@@ -313,7 +315,7 @@ export interface GameState {
   plan: PlanState;             // plan d'attaque du joueur
 
   log: { t: number; text: string; color: string }[];
-  alertText: string; alertT: number;
+  alertText: string; alertT: number; alertColor: string;
 }
 
 // ---------- Utilitaires d'état ----------
@@ -337,8 +339,8 @@ export function addLog(gs: GameState, text: string, color = '#8fa8c8') {
   gs.log.push({ t: gs.t, text, color });
   if (gs.log.length > 60) gs.log.shift();
 }
-export function setAlert(gs: GameState, text: string, dur = 4.5) {
-  gs.alertText = text; gs.alertT = dur;
+export function setAlert(gs: GameState, text: string, dur = 4.5, color = '#ff4b4b') {
+  gs.alertText = text; gs.alertT = dur; gs.alertColor = color;
 }
 
 /** Nom de secteur : anneau (1-3) × secteur angulaire (grec). */

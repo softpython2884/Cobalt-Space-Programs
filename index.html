@@ -49,36 +49,37 @@
     <div id="tacticalbar" class="hidden">
       <div class="tb-title">VUE TACTIQUE</div>
       <div class="tb-section">
-        <button id="btn-fleet-create" class="tb-btn">➕ Créer flotte</button>
-        <button id="btn-fleet-disband" class="tb-btn">✖ Dissoudre</button>
+        <button id="btn-fleet-create" class="tb-btn" data-ic="plus">Créer flotte</button>
+        <button id="btn-fleet-disband" class="tb-btn" data-ic="x">Dissoudre</button>
       </div>
       <div class="tb-section" id="tb-formations">
         <span class="tb-label">Formation :</span>
         <button class="tb-btn frm" data-frm="ligne">Ligne</button>
         <button class="tb-btn frm" data-frm="coin">Coin</button>
-        <button class="tb-btn frm" data-frm="cercle">Demi-cercle</button>
+        <button class="tb-btn frm" data-frm="cercle">Arc</button>
         <button class="tb-btn frm" data-frm="colonne">Colonne</button>
       </div>
       <div class="tb-section" id="tb-missions">
         <span class="tb-label">Mission de flotte :</span>
-        <button class="tb-btn msn" data-msn="mine_auto">⛏ Minage auto</button>
-        <button class="tb-btn msn" data-msn="trade_auto">⇄ Commerce</button>
-        <button class="tb-btn msn" data-msn="protect">Protéger l'amiral</button>
-        <button class="tb-btn msn" data-msn="patrol_civil">🛡 Patr. civile</button>
-        <button class="tb-btn msn" data-msn="patrol_in">🛡 Patr. intérieure</button>
-        <button class="tb-btn msn" data-msn="patrol_border">🛡 Patr. bordure</button>
-        <button class="tb-btn msn" data-msn="patrol_out">🛡 Patr. extérieure</button>
+        <button class="tb-btn msn" data-msn="mine_auto" data-ic="pick">Minage auto</button>
+        <button class="tb-btn msn" data-msn="trade_auto" data-ic="route">Commerce</button>
+        <button class="tb-btn msn" data-msn="protect" data-ic="star">Protéger l'amiral</button>
+        <button class="tb-btn msn" data-msn="patrol_civil" data-ic="heart">Patr. civile</button>
+        <button class="tb-btn msn" data-msn="patrol_in" data-ic="shield">Patr. intérieure</button>
+        <button class="tb-btn msn" data-msn="patrol_border" data-ic="shield">Patr. bordure</button>
+        <button class="tb-btn msn" data-msn="patrol_out" data-ic="shield">Patr. extérieure</button>
       </div>
       <div class="tb-section" id="tb-stances">
         <span class="tb-label">Doctrine de tir :</span>
-        <button class="tb-btn stc" data-stc="feu">🛡 À vue</button>
-        <button class="tb-btn stc" data-stc="defense">🛡 Défense</button>
-        <button class="tb-btn stc" data-stc="paix">🛡 Ne pas tirer</button>
+        <button class="tb-btn stc" data-stc="feu" data-ic="crosshair">À vue</button>
+        <button class="tb-btn stc" data-stc="defense" data-ic="shield">Défense</button>
+        <button class="tb-btn stc" data-stc="paix" data-ic="ban">Ne pas tirer</button>
       </div>
       <div class="tb-section" id="tb-plan">
         <span class="tb-label">Plan d'attaque <span class="kbd">P</span> :</span>
-        <button id="btn-plan-toggle" class="tb-btn">Mode plan</button>
-        <button id="btn-plan-obj" class="tb-btn">Objectif</button>
+        <button id="btn-plan-toggle" class="tb-btn" data-ic="map">Mode plan</button>
+        <button id="btn-plan-obj" class="tb-btn" data-ic="target">Objectif</button>
+        <button id="btn-plan-clear" class="tb-btn" data-ic="trash">Effacer</button>
         <span class="tb-label" id="plan-filter-label">Cibles autorisées :</span>
         <button class="tb-btn pfl" data-pfl="tout">Tout</button>
         <button class="tb-btn pfl" data-pfl="armes">Armés</button>

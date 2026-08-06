@@ -31,10 +31,16 @@ interface Ring { mesh: THREE.Mesh; life: number; maxLife: number; from: number; 
 
 const MAX_PARTICLES = 900;
 
-/** Initiale affichée sur l'icône tactique de chaque classe. */
-const CLASS_LETTER: Record<ShipClassId, string> = {
-  corvette: 'V', chasseur: 'C', bombardier: 'B', croiseur: 'K',
-  mineur: 'M', cargo: 'G', transporteur: 'T', raider: 'P',
+/** Forme d'icône tactique par classe de vaisseau. */
+const CLASS_SHAPE: Record<ShipClassId, string> = {
+  corvette: 'tri',        // triangle équilatéral
+  chasseur: 'tri_long',   // long triangle effilé
+  bombardier: 'kite',     // losange allongé vers l'avant
+  croiseur: 'penta',      // pentagone pointé vers l'avant
+  mineur: 'losange',      // losange
+  cargo: 'square',        // carré plein
+  transporteur: 'house',  // pentagone maison
+  raider: 'tri_rect',     // triangle rectangle
 };
 
 function teamColorOf(team: number): number {
@@ -62,6 +68,8 @@ export class Renderer3D {
   private novaRing: THREE.Mesh | null = null;
   private novaRing2: THREE.Mesh | null = null;
   private novaLight: THREE.PointLight | null = null;
+  private shakeT = 0;
+  private strikeBeams = new Map<number, THREE.Mesh>();
 
   // effets
   private particles: Particle[] = [];
@@ -392,13 +400,23 @@ export class Renderer3D {
       // faisceaux du pulsar : balayage type phare
       const beams = g.getObjectByName('beams');
       if (beams) beams.rotation.y += dt * 2.6;
-      // la supergéante gonfle et palpite dans ses 30 dernières secondes
+      // étoile instable : sur ses 5 dernières minutes elle grossit et rougit,
+      // puis palpite frénétiquement dans les 30 dernières secondes
       if (gs.map.supernovaAt > 0 && gs.supernovaWave < 0) {
         const left = gs.map.supernovaAt - gs.t;
-        if (left < 30) {
-          const prog = 1 - left / 30;
-          const sc = 1 + prog * 0.55 + Math.sin(this.time * (6 + prog * 14)) * 0.06 * prog;
+        if (left < 300) {
+          const prog = 1 - left / 300;
+          let sc = 1 + prog * 0.7;
+          if (left < 30) {
+            const p30 = 1 - left / 30;
+            sc += Math.sin(this.time * (6 + p30 * 14)) * 0.07 * p30;
+          }
           g.scale.setScalar(sc);
+          const core = g.getObjectByName('sunCore') as THREE.Mesh | undefined;
+          if (core) {
+            const m2 = core.material as THREE.MeshBasicMaterial;
+            m2.color.setHex(b.color).lerp(new THREE.Color(0xff2200), prog * 0.85);
+          }
         }
       }
     });
@@ -455,9 +473,9 @@ export class Renderer3D {
       const drill = m.getObjectByName('drill') as THREE.Mesh | undefined;
       if (drill && s.miningRes) drill.rotation.x += dt * 8;
 
-      // icône tactique : forme + lettre selon la classe
-      const iconShape = s.isFlagship ? 'diamond' : SHIP_CLASSES[s.cls].civil ? 'circle' : 'tri';
-      this.syncIcon(s.id, s.pos, iconShape, teamColorOf(s.team), tactical && detected, s.heading, CLASS_LETTER[s.cls]);
+      // icône tactique : forme géométrique propre à la classe (amiral : cadre)
+      const iconShape = s.isFlagship ? 'frame' : CLASS_SHAPE[s.cls];
+      this.syncIcon(s.id, s.pos, iconShape, teamColorOf(s.team), tactical && detected, s.heading);
     }
 
     // Structures
@@ -487,7 +505,10 @@ export class Renderer3D {
       if (ring) ring.rotation.z += dt * 0.25;
       const drill = m.getObjectByName('drill');
       if (drill) drill.rotation.y += dt * 3;
-      this.syncIcon(st.id, st.pos, 'square', teamColorOf(st.team), tactical, 0);
+      const stShape = st.stype === 'station' ? 'octa' : st.stype === 'mine' ? 'trapeze'
+        : st.stype === 'labo' ? 'hexa' : st.stype === 'satellite' ? 'semi'
+        : st.stype === 'depot' ? 'square' : 'square';
+      this.syncIcon(st.id, st.pos, stShape, teamColorOf(st.team), tactical, 0);
     }
 
     // Planètes
@@ -503,7 +524,7 @@ export class Renderer3D {
       m.position.set(p.pos.x, 0, p.pos.y);
       const globe = m.getObjectByName('globe');
       if (globe) globe.rotation.y += dt * 0.08;
-      // planète frappée : rougeoiement croissant + tremblements
+      // planète frappée : séquence cinématique (faisceau, rougeoiement, tremblements)
       let doom = m.getObjectByName('doom') as THREE.Mesh | undefined;
       if (p.dyingT > 0) {
         if (!doom) {
@@ -514,14 +535,45 @@ export class Renderer3D {
           doom.name = 'doom';
           m.add(doom);
         }
-        const prog = 1 - p.dyingT / 4;
-        (doom.material as THREE.MeshBasicMaterial).opacity = prog * 0.85;
-        m.position.x += (Math.random() - 0.5) * prog * 3;
-        m.position.z += (Math.random() - 0.5) * prog * 3;
-      } else if (doom) {
-        m.remove(doom);
-        doom.geometry.dispose();
-        (doom.material as THREE.Material).dispose();
+        const elapsed2 = 6 - p.dyingT;
+        // rougeoiement : léger d'abord, intense sur les 2 dernières secondes
+        const red = p.dyingT > 2 ? (elapsed2 / 4) * 0.3 : 0.3 + (1 - p.dyingT / 2) * 0.6;
+        (doom.material as THREE.MeshBasicMaterial).opacity = red;
+        const tremble = p.dyingT < 3 ? (1 - p.dyingT / 3) * 3.5 : 0.6;
+        m.position.x += (Math.random() - 0.5) * tremble;
+        m.position.z += (Math.random() - 0.5) * tremble;
+        // faisceau orbital : naît fin, enfle brutalement, se rétracte à toute vitesse
+        let beam = this.strikeBeams.get(p.id);
+        if (!beam) {
+          beam = new THREE.Mesh(
+            new THREE.CylinderGeometry(1, 1.4, 420, 10, 1, true),
+            new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+          );
+          beam.position.set(p.pos.x, 210, p.pos.y);
+          this.scene.add(beam);
+          this.strikeBeams.set(p.id, beam);
+        }
+        let w: number;
+        if (elapsed2 < 0.7) w = 0.5 + elapsed2 * 1.2;                     // filet de lumière
+        else if (elapsed2 < 1.4) { w = 2 + (elapsed2 - 0.7) * 26; this.shakeT = Math.max(this.shakeT, 0.5); }  // il ENFLE
+        else if (elapsed2 < 1.8) w = 20 - (elapsed2 - 1.4) * 49;          // rétraction éclair
+        else w = 0;
+        beam.visible = w > 0.1;
+        beam.scale.set(Math.max(w, 0.01), 1, Math.max(w, 0.01));
+        beam.position.set(p.pos.x + m.position.x - p.pos.x, 210, p.pos.y + m.position.z - p.pos.y);
+      } else {
+        if (doom) {
+          m.remove(doom);
+          doom.geometry.dispose();
+          (doom.material as THREE.Material).dispose();
+        }
+        const beam = this.strikeBeams.get(p.id);
+        if (beam) {
+          this.scene.remove(beam);
+          beam.geometry.dispose();
+          (beam.material as THREE.Material).dispose();
+          this.strikeBeams.delete(p.id);
+        }
       }
       const ownerRing = m.getObjectByName('ownerRing') as THREE.Mesh | undefined;
       if (ownerRing) {
@@ -531,7 +583,7 @@ export class Renderer3D {
           mm.color.setHex(teamColorOf(p.owner));
         } else mm.opacity = 0;
       }
-      this.syncIcon(p.id, p.pos, 'circle', p.owner >= 0 ? teamColorOf(p.owner) : 0x8a93a0, tactical, 0);
+      this.syncIcon(p.id, p.pos, 'ring', p.owner >= 0 ? teamColorOf(p.owner) : 0x8a93a0, tactical, 0);
     }
 
     // Astéroïdes
@@ -637,6 +689,14 @@ export class Renderer3D {
         this.scene.remove(m);
         disposeObject(m);
         this.meshes.delete(id);
+        const sb = this.strikeBeams.get(id);
+        if (sb) {
+          this.scene.remove(sb);
+          sb.geometry.dispose();
+          (sb.material as THREE.Material).dispose();
+          this.strikeBeams.delete(id);
+          this.shakeT = Math.max(this.shakeT, 1);
+        }
         const icon = this.icons.get(id);
         if (icon) { this.scene.remove(icon); icon.material.dispose(); this.icons.delete(id); }
         const ring = this.terrRings.get(id);
@@ -646,32 +706,34 @@ export class Renderer3D {
   }
 
   // ---------- Icônes tactiques ----------
-  private syncIcon(id: number, pos: V2, shape: string, color: number, show: boolean, heading: number, letter = '') {
+  private syncIcon(id: number, pos: V2, shape: string, color: number, show: boolean, heading: number) {
     let icon = this.icons.get(id);
     if (!show) { if (icon) icon.visible = false; return; }
-    const key = `${shape}|${color}|${letter}`;
+    const key = `${shape}|${color}`;
     if (!icon) {
       // matériau CLONÉ : la rotation de SpriteMaterial est par instance, un
       // matériau partagé ferait tourner toutes les icônes avec le dernier cap
-      icon = new THREE.Sprite(this.iconMaterial(shape, color, letter).clone());
+      icon = new THREE.Sprite(this.iconMaterial(shape, color).clone());
       icon.userData.key = key;
       this.icons.set(id, icon);
       this.scene.add(icon);
     } else if (icon.userData.key !== key) {
       // la couleur/forme a changé (colonisation, transfert d'amiral…)
       icon.material.dispose();
-      icon.material = this.iconMaterial(shape, color, letter).clone();
+      icon.material = this.iconMaterial(shape, color).clone();
       icon.userData.key = key;
     }
     icon.visible = true;
     const s = this.camH * 0.035 * (shape === 'square' ? 1.25 : shape === 'circle' ? 1.4 : 1);
     icon.scale.set(s, s, 1);
     icon.position.set(pos.x, 8, pos.y);
-    if (shape === 'tri' || shape === 'diamond') icon.material.rotation = -heading - Math.PI / 2;
+    if (['tri', 'tri_long', 'tri_rect', 'kite', 'penta', 'losange', 'house', 'frame', 'diamond'].includes(shape)) {
+      icon.material.rotation = -heading - Math.PI / 2;
+    }
   }
 
-  private iconMaterial(shape: string, color: number, letter = ''): THREE.SpriteMaterial {
-    const key = `${shape}|${color}|${letter}`;
+  private iconMaterial(shape: string, color: number): THREE.SpriteMaterial {
+    const key = `${shape}|${color}`;
     let m = this.iconTexCache.get(key);
     if (m) return m;
     const c = document.createElement('canvas');
@@ -681,24 +743,32 @@ export class Renderer3D {
     ctx.strokeStyle = 'rgba(0,0,0,0.55)';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    if (shape === 'tri') {
-      ctx.moveTo(24, 4); ctx.lineTo(42, 42); ctx.lineTo(24, 34); ctx.lineTo(6, 42);
-    } else if (shape === 'diamond') {
-      ctx.moveTo(24, 2); ctx.lineTo(44, 24); ctx.lineTo(24, 46); ctx.lineTo(4, 24);
-    } else if (shape === 'square') {
-      ctx.rect(8, 8, 32, 32);
-    } else {
-      ctx.arc(24, 24, 17, 0, Math.PI * 2);
+    const poly = (pts: [number, number][]) => {
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    };
+    // toutes les formes « pointent » vers le haut (le sprite est tourné selon le cap)
+    switch (shape) {
+      case 'tri': poly([[24, 6], [42, 42], [6, 42]]); break;
+      case 'tri_long': poly([[24, 2], [33, 46], [15, 46]]); break;
+      case 'tri_rect': poly([[10, 4], [38, 44], [10, 44]]); break;
+      case 'kite': poly([[24, 2], [37, 30], [24, 46], [11, 30]]); break;
+      case 'losange': poly([[24, 6], [42, 24], [24, 42], [6, 24]]); break;
+      case 'penta': poly([[24, 4], [44, 20], [36, 44], [12, 44], [4, 20]]); break;
+      case 'house': poly([[24, 6], [42, 20], [42, 42], [6, 42], [6, 20]]); break;
+      case 'trapeze': poly([[14, 10], [34, 10], [44, 38], [4, 38]]); break;
+      case 'hexa': poly([[24, 4], [41, 14], [41, 34], [24, 44], [7, 34], [7, 14]]); break;
+      case 'octa': poly([[17, 5], [31, 5], [43, 17], [43, 31], [31, 43], [17, 43], [5, 31], [5, 17]]); break;
+      case 'diamond': poly([[24, 2], [44, 24], [24, 46], [4, 24]]); break;
+      case 'square': ctx.rect(8, 8, 32, 32); break;
+      case 'semi': ctx.arc(24, 30, 18, Math.PI, 0); ctx.lineTo(42, 34); ctx.lineTo(6, 34); break;
+      case 'ring': ctx.arc(24, 24, 17, 0, Math.PI * 2); ctx.arc(24, 24, 9, 0, Math.PI * 2, true); break;
+      case 'frame': ctx.rect(6, 6, 36, 36); ctx.rect(16, 16, 16, 16); break;
+      default: ctx.arc(24, 24, 17, 0, Math.PI * 2); break;
     }
     ctx.closePath();
-    ctx.fill(); ctx.stroke();
-    if (letter) {
-      ctx.fillStyle = 'rgba(0,0,0,0.8)';
-      ctx.font = 'bold 17px Consolas, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(letter, 24, shape === 'tri' ? 30 : 25);
-    }
+    if (shape === 'ring' || shape === 'frame') ctx.fill('evenodd'); else ctx.fill();
+    ctx.stroke();
     const tex = new THREE.CanvasTexture(c);
     m = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
     this.iconTexCache.set(key, m);
@@ -741,6 +811,7 @@ export class Renderer3D {
           break;
         case 'explosion': {
           const size = fx.size ?? 10;
+          if (size > 40) this.shakeT = Math.max(this.shakeT, 0.7);
           this.spawnParticles(p3, fx.color ?? 0xff8c42, Math.min(50, 10 + size * 2), 20 + size * 2.4, 0.7, 3);
           this.spawnParticles(p3, 0xffd84b, Math.min(20, size), 12 + size, 0.5, 2.4);
           this.spawnRing(fx.pos, 2, size * 2.2, 0.5, fx.color ?? 0xff8c42);
@@ -931,11 +1002,12 @@ export class Renderer3D {
     }
     const want = new THREE.Vector3(target.x, this.camH, target.y + this.camH * 0.22);
     this.camCur.lerp(want, Math.min(1, 6 * dt));
-    // secousses : onde de supernova proche
-    let shake = 0;
+    // secousses : onde de supernova proche + gros impacts
+    this.shakeT = Math.max(0, this.shakeT - dt);
+    let shake = this.shakeT > 0 ? 5 * Math.min(1, this.shakeT / 0.7) : 0;
     if (gs.supernovaWave > 0) {
       const dWave = Math.abs(gs.supernovaWave - Math.hypot(this.camCur.x, this.camCur.z));
-      shake = clamp(7 * (1 - dWave / 800), 0, 7);
+      shake = Math.max(shake, clamp(7 * (1 - dWave / 800), 0, 7));
     }
     this.camera.position.set(
       this.camCur.x + (Math.random() - 0.5) * shake,

@@ -2,7 +2,7 @@
 // On utilise event.code (position physique) : ZQSD en AZERTY = WASD en QWERTY,
 // donc le jeu marche nativement sur les deux dispositions.
 
-export interface ClickEvent { button: number; x: number; y: number; ctrl: boolean; shift: boolean; dbl: boolean }
+export interface ClickEvent { button: number; x: number; y: number; ctrl: boolean; shift: boolean; dbl: boolean; triple: boolean }
 
 export class Input {
   keys = new Set<string>();
@@ -19,6 +19,8 @@ export class Input {
   dragDone: { x0: number; y0: number; x1: number; y1: number; ctrl: boolean; fromDouble: boolean } | null = null;
   /** Le bouton gauche actuellement maintenu provient d'un double-clic (mode sélection). */
   dblHold = false;
+  /** Nombre de pressions enchaînées (1 = simple, 2 = double, 3 = triple). */
+  chainCount = 1;
   private lastDownT = 0;
   private lastDownX = 0;
   private lastDownY = 0;
@@ -49,8 +51,10 @@ export class Input {
         this.leftDown = true;
         // double-clic (2 pressions rapides et proches) : passe en mode sélection
         const now = performance.now();
-        this.dblHold = (now - this.lastDownT < 380)
+        const chained = (now - this.lastDownT < 380)
           && Math.hypot(e.clientX - this.lastDownX, e.clientY - this.lastDownY) < 36;
+        this.chainCount = chained ? Math.min(3, this.chainCount + 1) : 1;
+        this.dblHold = this.chainCount >= 2;
         this.lastDownT = now;
         this.lastDownX = e.clientX; this.lastDownY = e.clientY;
         this.dragStart = { x: e.clientX, y: e.clientY };
@@ -61,7 +65,7 @@ export class Input {
     });
     // mouseup sur window : relâcher hors de la fenêtre ne doit pas bloquer leftDown/drag
     window.addEventListener('mouseup', e => {
-      const ev: ClickEvent = { button: e.button, x: e.clientX, y: e.clientY, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, dbl: this.dblHold };
+      const ev: ClickEvent = { button: e.button, x: e.clientX, y: e.clientY, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, dbl: this.dblHold, triple: this.chainCount >= 3 };
       const ui = onUI(e);
       if (e.button === 0) {
         this.leftDown = false;

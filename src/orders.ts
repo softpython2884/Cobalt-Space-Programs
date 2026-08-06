@@ -99,11 +99,11 @@ export function formationOffset(formation: FormationId, idx: number, spacing = 2
       return v2(-rank * spacing * 0.9, side * rank * spacing * 0.8);
     }
     case 'cercle': {
-      // demi-cercle derrière le chef, par anneaux de 6
+      // arc de cercle : voûte ouverte tournée vers l'avant, par anneaux de 6
       const slot = idx % 6, ring = 1 + Math.floor(idx / 6);
-      const arc = Math.PI * 1.1;
+      const arc = Math.PI * 0.6;
       const t = slot / 5;
-      return fromAngle(Math.PI - arc / 2 + t * arc, ring * spacing * 1.4);
+      return fromAngle(Math.PI - arc / 2 + t * arc, ring * spacing * 1.7);
     }
   }
 }

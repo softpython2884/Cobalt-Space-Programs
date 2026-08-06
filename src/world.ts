@@ -55,10 +55,10 @@ export function newGame(cfg: MatchConfig): GameState {
     neutronT: map.neutronPeriod > 0 ? map.neutronPeriod : -1,
     pirateT: 100,
     supernovaWave: -1,
-    alliances: new Set(), diploOffers: [], focusTargets: {},
+    alliances: new Set(), allianceSince: {}, diploOffers: [], focusTargets: {},
     storms: [], stormT: 480 + rng() * 120,
     plan: { filter: 'tout', objective: null, armed: false },
-    log: [], alertText: '', alertT: 0,
+    log: [], alertText: '', alertT: 0, alertColor: '#ff4b4b',
   };
 
   // ---------- Équipes ----------

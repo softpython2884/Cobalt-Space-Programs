@@ -3,15 +3,16 @@ import {
   GameState, MatchConfig, SIM_DT, V2, dist, clamp, StructType, GadgetId,
   structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind, PlanFilter, Stance,
 } from './core';
-import { SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST } from './data';
+import { SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST, PLANET_UPGRADE_COST } from './data';
 import { newGame } from './world';
 import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
+  tryUpgradePlanet, requestDefend,
 } from './sim';
-import { setFleetMission } from './orders';
+import { setFleetMission, removeFromFleet } from './orders';
 import { canDetect } from './entities';
 import { createFleet, disbandFleet, issueOrder, fleetShips } from './orders';
 import { Renderer3D } from './render3d';
@@ -38,6 +39,8 @@ let lockWarnT = 0;
 let prevNova = -1;
 let planMode: 'off' | 'staging' | 'objective' = 'off';
 let sirenT = 0;
+let leftHeldT = 0;                 // durée d'appui du clic gauche
+let pendingShot: { t: number; aim: V2 } | null = null;   // tir de clic bref, différé
 
 window.addEventListener('resize', () => renderer?.resize());
 // l'audio ne peut démarrer qu'après un geste utilisateur
@@ -149,8 +152,22 @@ function handleInput(dt: number) {
     }
 
     if (!locking) {
-      if (input.down('Space') || (input.leftDown && !input.dblHold && !hud.ctxOpen && !buildMode)) {
+      // maintien : le tir continu ne démarre qu'après un très court délai,
+      // pour que le premier clic d'un double-clic ne parte pas tout seul
+      leftHeldT = input.leftDown ? leftHeldT + dt : 0;
+      const holdFire = input.leftDown && !input.dblHold && leftHeldT > 0.14 && !hud.ctxOpen && !buildMode;
+      if (input.down('Space') || holdFire) {
         fireShipWeapon(gs, ship, 0, aim);
+        pendingShot = null;
+      }
+      // clic bref : tir différé de 0,22 s, annulé si un double-clic suit
+      if (pendingShot) {
+        pendingShot.t -= dt;
+        if (input.dblHold || input.leftDown) pendingShot = null;
+        else if (pendingShot.t <= 0) {
+          fireShipWeapon(gs, ship, 0, pendingShot.aim);
+          pendingShot = null;
+        }
       }
       if (input.down('KeyQ') && !hasMissile) fireShipWeapon(gs, ship, 1, aim);  // A en AZERTY
       if (input.down('KeyE')) fireShipWeapon(gs, ship, 2, aim);
@@ -265,18 +282,28 @@ function handleInput(dt: number) {
       else { sfx.buy(); buildMode = null; }
       continue;
     }
-    // en vue action, la sélection se fait au DOUBLE-clic (le clic simple tire) ;
-    // en vue tactique, le clic simple suffit
-    if (!tactical && !c.dbl) continue;
+    // vue action : clic simple = tir (différé pour laisser sa chance au double-clic)
+    if (!tactical && !c.dbl) {
+      pendingShot = { t: 0.22, aim: renderer.worldFromScreen(c.x, c.y) };
+      continue;
+    }
     const picked = renderer.pickEntity(gs, c.x, c.y, visibleSet);
     if (picked != null) {
       const s = shipById(gs, picked);
       if (s && s.team === gs.playerTeam) {
-        if (c.ctrl) {
-          if (!gs.selection.includes(picked)) gs.selection.push(picked);
-          else gs.selection = gs.selection.filter(id => id !== picked);
+        const g4 = gs;
+        if (tactical && c.triple) {
+          // triple-clic : tous les vaisseaux de ce type
+          g4.selection = g4.ships.filter(x => x.alive && x.team === g4.playerTeam && x.cls === s.cls).map(x => x.id);
+        } else if (tactical && c.dbl && s.fleetId != null) {
+          // double-clic : toute la flotte
+          const f = g4.fleets.find(f2 => f2.id === s.fleetId);
+          g4.selection = f ? fleetShips(g4, f).map(x => x.id) : [picked];
+        } else if (c.ctrl) {
+          if (!g4.selection.includes(picked)) g4.selection.push(picked);
+          else g4.selection = g4.selection.filter(id => id !== picked);
         } else {
-          gs.selection = [picked];
+          g4.selection = [picked];
         }
         sfx.ui();
         continue;
@@ -460,7 +487,7 @@ function openOrderMenu(sx: number, sy: number) {
   const pos = renderer.worldFromScreen(sx, sy);
   const picked = renderer.pickEntity(gs, sx, sy, visibleSet);
   const orderables = gs.selection.filter(id => id !== gs!.playerShipId && shipById(gs!, id));
-  const items: { label: string; cb: () => void }[] = [];
+  const items: { label: string; cb: () => void; ic?: string }[] = [];
   let title = 'ORDRES';
 
   const pickedShip = picked != null ? shipById(gs, picked) : undefined;
@@ -475,43 +502,64 @@ function openOrderMenu(sx: number, sy: number) {
     // cibles ennemies (jamais les alliés)
     const hostile = (team: number) => team !== gs!.playerTeam && !areAllied(gs!, gs!.playerTeam, team);
     if (pickedShip && hostile(pickedShip.team)) {
-      items.push({ label: `⚔ Attaquer ${SHIP_CLASSES[pickedShip.cls].nom}`, cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedShip.id }) });
+      items.push({ label: `Attaquer ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedShip.id }) });
     }
     if (pickedStruct && hostile(pickedStruct.team)) {
-      items.push({ label: `⚔ Attaquer la structure`, cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedStruct.id }) });
+      items.push({ label: 'Attaquer la structure', ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedStruct.id }) });
     }
     if (pickedPlanet && pickedPlanet.owner >= 0 && hostile(pickedPlanet.owner)) {
-      items.push({ label: `⚔ Attaquer la colonie ${pickedPlanet.name}`, cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedPlanet.id }) });
+      items.push({ label: `Attaquer la colonie ${pickedPlanet.name}`, ic: 'crosshair', cb: () => issueOrder(gs!, orderables, { kind: 'attack', targetId: pickedPlanet.id }) });
     }
     // escorte d'un allié / d'une flotte
     if (pickedShip && pickedShip.team === gs.playerTeam && !orderables.includes(pickedShip.id)) {
-      items.push({ label: `🛡 Escorter ${SHIP_CLASSES[pickedShip.cls].nom}`, cb: () => issueOrder(gs!, orderables, { kind: 'escort', targetId: pickedShip.id }) });
+      items.push({ label: `Escorter ${SHIP_CLASSES[pickedShip.cls].nom}`, ic: 'shield', cb: () => issueOrder(gs!, orderables, { kind: 'escort', targetId: pickedShip.id }) });
     }
     // minage
     if (pickedRoid || pickedCloud) {
       const id = (pickedRoid ?? pickedCloud)!.id;
-      items.push({ label: `⛏ Miner ici`, cb: () => issueOrder(gs!, orderables, { kind: 'mine', targetId: id }) });
+      items.push({ label: 'Miner ici', ic: 'pick', cb: () => issueOrder(gs!, orderables, { kind: 'mine', targetId: id }) });
     }
     // planètes
     if (pickedPlanet) {
       if (pickedPlanet.owner < 0) {
         const hasTransporter = orderables.some(id => SHIP_CLASSES[shipById(gs!, id)!.cls].canColonize);
         if (hasTransporter) {
-          items.push({ label: `🏳 Coloniser ${pickedPlanet.name}`, cb: () => issueOrder(gs!, orderables, { kind: 'colonize', targetId: pickedPlanet.id }) });
+          items.push({ label: `Coloniser ${pickedPlanet.name}`, ic: 'flag', cb: () => issueOrder(gs!, orderables, { kind: 'colonize', targetId: pickedPlanet.id }) });
         }
       } else if (pickedPlanet.owner === gs.playerTeam) {
-        items.push({ label: `⇄ Commercer avec ${pickedPlanet.name}`, cb: () => issueOrder(gs!, orderables, { kind: 'trade', targetId: pickedPlanet.id }) });
+        items.push({ label: `Commercer avec ${pickedPlanet.name}`, ic: 'route', cb: () => issueOrder(gs!, orderables, { kind: 'trade', targetId: pickedPlanet.id }) });
       }
     }
     if (pickedWreck) {
-      items.push({ label: `♻ Récupérer l'épave`, cb: () => issueOrder(gs!, orderables, { kind: 'salvage', targetId: pickedWreck.id }) });
+      items.push({ label: `Récupérer l'épave`, ic: 'box', cb: () => issueOrder(gs!, orderables, { kind: 'salvage', targetId: pickedWreck.id }) });
     }
     // toujours possibles
-    items.push({ label: '➤ Déplacer ici', cb: () => issueOrder(gs!, orderables, { kind: 'move', pos }) });
-    items.push({ label: '⚓ Garder la position', cb: () => issueOrder(gs!, orderables, { kind: 'guard', pos }) });
-    items.push({ label: '🏠 Retour à la station', cb: () => issueOrder(gs!, orderables, { kind: 'dock' }) });
+    // protéger un corps possédé : les vaisseaux armés quittent leur flotte et montent la garde
+    const bodyToProtect = (pickedStruct && pickedStruct.team === gs.playerTeam) ? pickedStruct
+      : (pickedPlanet && pickedPlanet.owner === gs.playerTeam) ? pickedPlanet : null;
+    const armedSel = orderables.filter(id => {
+      const sh = shipById(gs!, id);
+      return sh && SHIP_CLASSES[sh.cls].power > 3;
+    });
+    if (bodyToProtect && armedSel.length > 0) {
+      items.push({
+        label: 'Protéger ce corps', ic: 'shield',
+        cb: () => {
+          for (const id of armedSel) {
+            const sh = shipById(gs!, id);
+            if (!sh) continue;
+            removeFromFleet(gs!, sh);
+            sh.order = { kind: 'orbit', targetId: bodyToProtect.id };
+          }
+          sfx.ui();
+        },
+      });
+    }
+    items.push({ label: 'Déplacer ici', ic: 'arrow', cb: () => issueOrder(gs!, orderables, { kind: 'move', pos }) });
+    items.push({ label: 'Garder la position', ic: 'shield', cb: () => issueOrder(gs!, orderables, { kind: 'guard', pos }) });
+    items.push({ label: 'Retour à la station', ic: 'home', cb: () => issueOrder(gs!, orderables, { kind: 'dock' }) });
   }
-  // recruter une garde orbitale sur un corps qui nous appartient
+  // recruter une garde orbitale / renforcer la colonie d'un corps possédé
   const guardable = (pickedStruct && pickedStruct.team === gs.playerTeam)
     ? pickedStruct
     : (pickedPlanet && pickedPlanet.owner === gs.playerTeam) ? pickedPlanet : null;
@@ -519,9 +567,18 @@ function openOrderMenu(sx: number, sy: number) {
     const st = structById(gs, gs.teams[gs.playerTeam].stationId);
     const cost = GUARD_COST[st?.level ?? 1];
     items.push({
-      label: `🛡 Recruter une garde orbitale (${cost} ⬡)`,
+      label: `Recruter une garde orbitale (${cost})`, ic: 'orbit',
       cb: () => {
         const err = buyGuards(gs!, gs!.playerTeam, guardable.id);
+        if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
+      },
+    });
+  }
+  if (pickedPlanet && pickedPlanet.owner === gs.playerTeam && pickedPlanet.colonyHpMax < 1200) {
+    items.push({
+      label: `Renforcer la colonie (${PLANET_UPGRADE_COST})`, ic: 'plus',
+      cb: () => {
+        const err = tryUpgradePlanet(gs!, gs!.playerTeam, pickedPlanet.id);
         if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
       },
     });
@@ -603,6 +660,25 @@ hud.onStance = stance => {
 hud.onPlanToggle = () => { planMode = planMode === 'off' ? 'staging' : 'off'; sfx.ui(); };
 hud.onPlanObjective = () => { planMode = 'objective'; sfx.ui(); };
 hud.onPlanFilter = f => { if (gs) { gs.plan.filter = f as PlanFilter; sfx.ui(); } };
+hud.onPlanClear = () => {
+  if (!gs) return;
+  gs.plan.objective = null;
+  gs.plan.armed = false;
+  planMode = 'off';
+  for (const f of gs.fleets) {
+    if (f.team === gs.playerTeam && f.mission.kind === 'plan') {
+      const lead = shipById(gs, f.leaderId);
+      setFleetMission(gs, f, { kind: 'guard', pos: lead ? { ...lead.pos } : undefined });
+    }
+  }
+  hud.flashHint('Plan effacé.');
+  sfx.ui();
+};
+hud.onDiploDefend = team => {
+  if (!gs) return;
+  const err = requestDefend(gs, gs.playerTeam, team);
+  if (err) { sfx.error(); hud.flashHint(err); } else sfx.ui();
+};
 hud.onOfferRefuse = id => { if (gs) { refuseOffer(gs, id); sfx.ui(); } };
 
 function frame(now: number) {
@@ -666,7 +742,7 @@ function frame(now: number) {
     sirenT = 12;
     sfx.siren();
     window.setTimeout(() => sfx.siren(), 1100);
-    gs.alertText = '🚨 VOTRE STATION EST ATTAQUÉE';
+    gs.alertText = 'VOTRE STATION EST ATTAQUÉE';
     gs.alertT = 4.5;
   }
 

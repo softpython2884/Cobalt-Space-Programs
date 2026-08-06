@@ -110,14 +110,29 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       break;
     }
     case 'bombardier': {
-      g.add(box(7, 2.2, 4, mid));
-      g.add(box(3, 1.4, 6.5, dark, -1));
-      g.add(cone(1.8, 2.6, 4, accent, 4.6));
-      g.add(cyl(0.9, 0.9, 1.6, 6, dark, 0.6, -1.2, 2.2));
-      g.add(cyl(0.9, 0.9, 1.6, 6, dark, 0.6, -1.2, -2.2));
-      g.add(box(4, 0.6, 1.6, accent, -0.6, 1.4, 0));
-      g.add(engineFlame(0xff8c42, -4.2, 1.4, 1.1));
-      g.add(engineFlame(0xff8c42, -4.2, -1.4, 1.1));
+      // forteresse volante : coque longue et massive, 3 canons-bombardiers dorsaux
+      g.add(box(13, 2.4, 4.2, mid));
+      g.add(box(6, 1.8, 6, dark, -2, -0.4, 0));
+      g.add(cone(2, 3.2, 4, light, 7.6));
+      g.add(box(2.4, 1, 5, accent, 4.4, -0.6, 0));
+      // les 3 grosses tourelles de bombardement (bien visibles)
+      for (const x of [3.2, 0, -3.2]) {
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.6, 2.6, 8), dark);
+        barrel.position.set(x, 1.9, 0);
+        g.add(barrel);
+        const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 1.4, 8),
+          mat(0x7adfff, { emissive: 0x2a8fb0, emissiveIntensity: 1.2 }));
+        muzzle.position.set(x, 3.6, 0);
+        g.add(muzzle);
+        g.add(box(2.6, 0.5, 5.4, accent, x, 0.9, 0));
+      }
+      // flancs blindés
+      g.add(box(9, 1.2, 1, dark, -1, 0, 2.6));
+      g.add(box(9, 1.2, 1, dark, -1, 0, -2.6));
+      g.add(box(3, 0.8, 7.4, accent, -5.4, 0, 0));
+      g.add(engineFlame(0xff8c42, -7.4, 0, 1.4));
+      g.add(engineFlame(0xff8c42, -7, 0, 2.2));
+      g.add(engineFlame(0xff8c42, -7, 0, -2.2));
       break;
     }
     case 'croiseur': {
@@ -151,15 +166,28 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       break;
     }
     case 'cargo': {
-      g.add(box(3.5, 2, 3, mid, 3));
-      g.add(cone(1.2, 1.8, 4, accent, 5.4));
-      // conteneurs
-      const colors = [0xc86b4b, 0x6bc8a0, 0xc8b84b];
-      for (let i = 0; i < 3; i++) {
-        g.add(box(2.6, 2, 3.4, mat(colors[i], { metalness: 0.1 }), 0.8 - i * 3, 0, 0));
+      // long courrier : cabine avant, épine dorsale, conteneurs en 2x2, bloc moteur
+      g.add(box(2.6, 2.2, 2.6, light, 4.4));                    // cabine
+      const winshield = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1, 1.8),
+        mat(0x9fdcff, { emissive: 0x2a6f8f, emissiveIntensity: 0.6 }));
+      winshield.position.set(5.7, 0.4, 0);
+      g.add(winshield);
+      g.add(box(2, 0.8, 3.4, accent, 4.2, -1.2, 0));            // jupe avant
+      g.add(box(10, 0.8, 1, dark, -1.4, 0.9, 0));               // épine dorsale
+      g.add(box(10, 0.8, 1, dark, -1.4, -1, 0));
+      const colors = [0xc86b4b, 0x6bc8a0, 0xc8b84b, 0x7a8ac8];
+      for (let i = 0; i < 2; i++) {
+        for (const side of [1.35, -1.35]) {
+          const k = i * 2 + (side > 0 ? 0 : 1);
+          g.add(box(3.6, 1.9, 2.2, mat(colors[k % 4], { metalness: 0.1 }), 1.4 - i * 4, 0, side));
+        }
       }
-      g.add(box(9, 0.5, 0.8, dark, -2.2, -1, 0));
-      g.add(engineFlame(0xffd27a, -7, 0, 0.9));
+      g.add(box(1.6, 2.4, 3.2, mid, -5.6));                     // bloc moteur
+      g.add(cyl(0.55, 0.75, 1.2, 6, dark, -6.6, 0.7, 0.9));
+      g.add(cyl(0.55, 0.75, 1.2, 6, dark, -6.6, 0.7, -0.9));
+      g.add(box(1.2, 0.6, 4.4, accent, -5.4, 1.5, 0));
+      g.add(engineFlame(0xffd27a, -7.4, 0.9, 0.75));
+      g.add(engineFlame(0xffd27a, -7.4, -0.9, 0.75));
       break;
     }
     case 'transporteur': {
@@ -509,35 +537,37 @@ export function buildStarBody(starType: StarType, radius: number, color: number)
   corona.name = 'corona';
   g.add(corona);
   if (starType === 'neutron') {
-    // pulsar apaisé : cœur éclatant, halo, et une longue traînée de plasma FIXE
+    // pulsar : deux jets polaires opposés, inclinés à 45°, ATTACHÉS à l'étoile
+    const jets = new THREE.Group();
+    const jetM = new THREE.MeshBasicMaterial({
+      color: 0xd8f2ff, transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    // chaque jet part de la surface : cône dont la BASE touche l'étoile,
+    // pointe vers l'extérieur (le cône par défaut a sa pointe vers +Y)
+    const mkJet = (sign: number) => {
+      const grp = new THREE.Group();
+      const core = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.55, radius * 11, 10, 1, true), jetM);
+      core.position.y = sign * (radius * 0.9 + radius * 5.5);
+      if (sign < 0) core.rotation.x = Math.PI;   // jet du bas : pointe vers -Y
+      grp.add(core);
+      const halo2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.95, radius * 6.5, 10, 1, true), jetM.clone());
+      (halo2.material as THREE.MeshBasicMaterial).opacity = 0.22;
+      halo2.position.y = sign * (radius * 0.9 + radius * 3.2);
+      if (sign < 0) halo2.rotation.x = Math.PI;
+      grp.add(halo2);
+      return grp;
+    };
+    jets.add(mkJet(1), mkJet(-1));
+    jets.rotation.z = Math.PI / 4;    // axe incliné à 45°
+    g.add(jets);
+    // halo doux autour du cœur
     const halo = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(radius * 1.6, 2),
-      new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.18, depthWrite: false }),
+      new THREE.IcosahedronGeometry(radius * 1.5, 2),
+      new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.16, depthWrite: false }),
     );
     halo.name = 'corona';
     g.add(halo);
-    // traînée : plume effilée dans une direction unique (comme une comète)
-    const trailM = new THREE.MeshBasicMaterial({
-      color: 0x9fdcff, transparent: true, opacity: 0.3,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    const trail = new THREE.Mesh(new THREE.ConeGeometry(radius * 1.4, radius * 14, 10, 1, true), trailM);
-    trail.rotation.z = Math.PI / 2;              // pointe vers -X, épaisse près de l'étoile
-    trail.position.x = -radius * 7.6;
-    trail.name = 'trail';
-    g.add(trail);
-    const trail2 = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.7, radius * 20, 8, 1, true), trailM.clone());
-    (trail2.material as THREE.MeshBasicMaterial).opacity = 0.16;
-    trail2.rotation.z = Math.PI / 2;
-    trail2.position.x = -radius * 10.4;
-    g.add(trail2);
-    // fin anneau équatorial statique
-    const pdisk = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 1.9, radius * 2.15, 48),
-      new THREE.MeshBasicMaterial({ color: 0x7adfff, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    pdisk.rotation.x = -Math.PI / 2;
-    g.add(pdisk);
   }
   return g;
 }

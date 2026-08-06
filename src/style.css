@@ -271,3 +271,13 @@ h2 { letter-spacing: 4px; margin-bottom: 18px; }
 
 /* ---------- Alerte radio ---------- */
 #alert.radio-noise { color: #9fdcff; text-shadow: 0 0 14px rgba(122,223,255,0.8); letter-spacing: 6px; }
+
+
+/* ---------- Icônes SVG (style ligne, blanches) ---------- */
+.ic {
+  width: 12px; height: 12px; display: inline-block; vertical-align: -1.5px;
+  margin-right: 5px; stroke: currentColor; flex-shrink: 0;
+}
+.b-icon .ic { width: 20px; height: 20px; margin: 0; stroke: #cfe3ff; }
+.o-title .ic { width: 11px; height: 11px; }
+.ctx-item .ic { width: 12px; height: 12px; margin-right: 7px; }

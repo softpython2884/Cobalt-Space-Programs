@@ -1,12 +1,12 @@
 // ============ COBALT SECTOR — HUD, menus, panneaux (DOM) ============
 import {
   GameState, MatchConfig, StarType, PersonaId, StructType, GadgetId, V2, dist, len,
-  sectorName, territoryOwner, NO_TEAM, PIRATE_TEAM, structById, PlanetType, areAllied,
+  sectorName, territoryOwner, NO_TEAM, PIRATE_TEAM, structById, PlanetType, areAllied, allyKey,
 } from './core';
 import {
   TEAM_DEFS, PIRATE_DEF, NEUTRAL_CSS, STARS, STAR_LIST, PERSONAS, PERSONA_LIST,
   SHIP_CLASSES, BUYABLE_SHIPS, WEAPONS, UPGRADES, GADGETS, GADGET_ORDER, MODES, STRUCTS,
-  STATION_UPGRADE_PRICE, STATION_LEVEL_DESC, MINES, DOCK_RANGE, RES_PRICE,
+  STATION_UPGRADE_PRICE, STATION_LEVEL_DESC, MINES, DOCK_RANGE, RES_PRICE, ALLIANCE_DURATION,
 } from './data';
 import {
   tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, playerShip, teamScore,
@@ -15,6 +15,41 @@ import { fleetShips, missionLabel } from './orders';
 import { sfx } from './sfx';
 
 const $ = (id: string) => document.getElementById(id)!;
+
+// ---------- Icônes SVG style « ligne » (aucun emoji dans l'interface) ----------
+const IC = (inner: string) =>
+  `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+export const ICONS: Record<string, string> = {
+  plus: IC('<path d="M12 5v14M5 12h14"/>'),
+  x: IC('<path d="M18 6 6 18M6 6l12 12"/>'),
+  shield: IC('<path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/>'),
+  crosshair: IC('<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>'),
+  pick: IC('<path d="M3 21L14 10M9 5c4-2.5 9-.5 11 4M9 5l10 4"/>'),
+  route: IC('<path d="M5 19h9a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h9"/><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="7" r="1.6"/>'),
+  star: IC('<path d="M12 3l2.6 5.6 6 .7-4.5 4 1.2 5.9L12 16.4 6.7 19.2l1.2-5.9-4.5-4 6-.7z"/>'),
+  heart: IC('<path d="M12 20s-7-4.5-9-9c-1.2-3 1-7 4.5-7 2 0 3.5 1 4.5 2.7C13 5 14.5 4 16.5 4 20 4 22.2 8 21 11c-2 4.5-9 9-9 9z"/>'),
+  map: IC('<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/>'),
+  target: IC('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>'),
+  trash: IC('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
+  wind: IC('<path d="M3 8h9a2.5 2.5 0 1 0-2.5-2.5M3 12h13a2.5 2.5 0 1 1-2.5 2.5M3 16h7"/>'),
+  radar: IC('<path d="M12 12l5.5-5.5M12 4a8 8 0 1 1-8 8"/><circle cx="12" cy="12" r="1.5"/>'),
+  eyeoff: IC('<path d="M3 3l18 18M10.5 5.2C15 4 19.5 7 21 12c-.5 1.6-1.4 3-2.6 4.2M6.2 6.2C4.3 7.6 2.8 9.6 2 12c1.5 5 6 8 10 7 1.2-.2 2.3-.7 3.3-1.3"/>'),
+  orbit: IC('<circle cx="12" cy="12" r="3"/><path d="M19.5 9.5A8.5 8.5 0 1 1 9.5 4.5"/>'),
+  cloud: IC('<path d="M6 18h11a4 4 0 0 0 0-8 6 6 0 0 0-11.3-1A4.5 4.5 0 0 0 6 18z"/>'),
+  ghost: IC('<path d="M5 21V11a7 7 0 0 1 14 0v10l-2.3-2-2.4 2-2.3-2-2.3 2-2.4-2z"/><circle cx="9.5" cy="11" r="1"/><circle cx="14.5" cy="11" r="1"/>'),
+  rocket: IC('<path d="M12 3c3 2 4 6 4 9l2.5 3.5-3.5-1c-1 2-2 3-3 4-1-1-2-2-3-4l-3.5 1L8 12c0-3 1-7 4-9z"/>'),
+  link: IC('<path d="M9 15l6-6M8 12l-2 2a3.5 3.5 0 0 0 5 5l2-2M16 12l2-2a3.5 3.5 0 0 0-5-5l-2 2"/>'),
+  refresh: IC('<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>'),
+  radio: IC('<circle cx="12" cy="12" r="1.8"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/>'),
+  flag: IC('<path d="M5 21V4h11l-2 4 2 4H5"/>'),
+  home: IC('<path d="M4 11l8-7 8 7v9h-5v-6h-6v6H4z"/>'),
+  arrow: IC('<path d="M5 12h14M13 6l6 6-6 6"/>'),
+  box: IC('<path d="M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8"/>'),
+  ban: IC('<circle cx="12" cy="12" r="8"/><path d="M6.3 6.3l11.4 11.4"/>'),
+  check: IC('<path d="M4 13l5 5L20 7"/>'),
+};
+const MODE_ICONS: Record<string, string> = { croisiere: ICONS.wind, radar: ICONS.radar, espion: ICONS.eyeoff, saut: ICONS.orbit };
+const GADGET_ICONS: Record<string, string> = { fumee: ICONS.cloud, camouflage: ICONS.ghost, bouclier_orbital: ICONS.shield, frappe: ICONS.crosshair, soutien: ICONS.rocket };
 const AZERTY_DIGITS = ['&', 'é', '"', "'", '(', '-', 'è', '_', 'ç'];
 
 export class HUD {
@@ -50,6 +85,8 @@ export class HUD {
   onPlanToggle: () => void = () => {};
   onPlanObjective: () => void = () => {};
   onPlanFilter: (f: string) => void = () => {};
+  onPlanClear: () => void = () => {};
+  onDiploDefend: (team: number) => void = () => {};
   onDiploPropose: (team: number) => void = () => {};
   onDiploBreak: (team: number) => void = () => {};
   onDiploFocus: (team: number, target: number) => void = () => {};
@@ -191,11 +228,11 @@ export class HUD {
     box.innerHTML = '';
     box.style.pointerEvents = 'auto';
     MODES.forEach((m, i) => {
-      box.appendChild(this.makeBadge(String(i + 1), m.icon, m.nom, () => this.onBadge('mode', m.id), `badge-mode-${m.id}`, m.desc));
+      box.appendChild(this.makeBadge(String(i + 1), MODE_ICONS[m.id] ?? '', m.nom, () => this.onBadge('mode', m.id), `badge-mode-${m.id}`, m.desc));
     });
     GADGET_ORDER.forEach((gid, i) => {
       const g = GADGETS[gid];
-      box.appendChild(this.makeBadge(String(5 + i), g.icon, g.nom, () => this.onBadge('gadget', gid), `badge-gadget-${gid}`, g.desc));
+      box.appendChild(this.makeBadge(String(5 + i), GADGET_ICONS[gid] ?? '', g.nom, () => this.onBadge('gadget', gid), `badge-gadget-${gid}`, g.desc));
     });
   }
 
@@ -304,10 +341,12 @@ export class HUD {
       alert.classList.remove('hidden');
       const now = performance.now();
       if (now < this.alertRevealT) {
-        alert.textContent = '▚▞ TRANSMISSION ▚▞';
+        alert.textContent = '- - TRANSMISSION - -';
         alert.classList.add('radio-noise');
+        alert.style.color = '';
       } else {
         alert.classList.remove('radio-noise');
+        alert.style.color = gs.alertColor;
         const shown = Math.min(this.curAlert.length, Math.floor((now - this.alertRevealT) / 20) + 1);
         alert.textContent = this.curAlert.slice(0, shown);
       }
@@ -541,7 +580,7 @@ export class HUD {
     const sig = others.map(id => {
       const t = gs.teams[id];
       return `${id}:${t.alive ? 1 : 0}:${areAllied(gs, gs.playerTeam, id) ? 1 : 0}:${Math.floor(teamScore(gs, id) / 50)}`;
-    }).join('|') + `|${Math.floor(gs.teams[gs.playerTeam].credits / 100)}`;
+    }).join('|') + `|${Math.floor(gs.teams[gs.playerTeam].credits / 100)}|${Math.floor(gs.t)}`;
     if (sig === this.diploSig) return;
     this.diploSig = sig;
     const box = $('diplo-list');
@@ -555,7 +594,7 @@ export class HUD {
       head.className = 'd-head';
       head.innerHTML = `<span class="ts-dot" style="background:${t.cssColor}"></span>` +
         `<b>${t.name}</b> <span class="s-desc">${PERSONAS[t.persona].nom} · score ${teamScore(gs, id)}</span>` +
-        `<span class="d-status${allied ? ' allied' : ''}">${t.alive ? (allied ? '🤝 Allié' : 'Neutre') : '☠ Éliminée'}</span>`;
+        `<span class="d-status${allied ? ' allied' : ''}">${t.alive ? (allied ? 'Allié' : 'Neutre') : 'Éliminée'}</span>`;
       row.appendChild(head);
       if (t.alive) {
         const btns = document.createElement('div');
@@ -563,22 +602,40 @@ export class HUD {
         if (!allied) {
           const b = document.createElement('button');
           b.className = 'tb-btn';
-          b.textContent = '🤝 Proposer une alliance';
+          b.innerHTML = ICONS.link + 'Proposer une alliance';
           b.onclick = () => { this.onDiploPropose(id); this.diploSig = ''; };
           btns.appendChild(b);
         } else {
+          // durée restante du pacte + renouvellement dans les 2 dernières minutes
+          const age = gs.t - (gs.allianceSince[allyKey(gs.playerTeam, id)] ?? 0);
+          const left = Math.max(0, ALLIANCE_DURATION - age);
+          const timer = document.createElement('span');
+          timer.className = 's-desc';
+          timer.textContent = `pacte : ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}`;
+          btns.appendChild(timer);
+          if (left < 120) {
+            const rn = document.createElement('button');
+            rn.className = 'tb-btn';
+            rn.innerHTML = ICONS.refresh + 'Renouveler';
+            rn.onclick = () => { this.onDiploPropose(id); this.diploSig = ''; };
+            btns.appendChild(rn);
+          }
+          const bd2 = document.createElement('button');
+          bd2.className = 'tb-btn';
+          bd2.innerHTML = ICONS.shield + 'Demander de l\'aide';
+          bd2.onclick = () => { this.onDiploDefend(id); };
+          btns.appendChild(bd2);
           const br = document.createElement('button');
           br.className = 'tb-btn';
-          br.textContent = '💔 Rompre';
+          br.innerHTML = ICONS.x + 'Rompre';
           br.onclick = () => { this.onDiploBreak(id); this.diploSig = ''; };
           btns.appendChild(br);
-          // demander de cibler chaque ennemi restant
           for (const foe of gs.activeTeams) {
             if (foe === id || foe === gs.playerTeam || !gs.teams[foe].alive) continue;
             if (areAllied(gs, gs.playerTeam, foe)) continue;
             const bf = document.createElement('button');
             bf.className = 'tb-btn';
-            bf.textContent = `⚔ Cibler ${gs.teams[foe].name}`;
+            bf.innerHTML = ICONS.crosshair + `Cibler ${gs.teams[foe].name}`;
             bf.onclick = () => { this.onDiploFocus(id, foe); this.diploSig = ''; };
             btns.appendChild(bf);
           }
@@ -602,17 +659,19 @@ export class HUD {
       div.className = 'offer-box';
       const txt = o.type === 'alliance'
         ? `<b style="color:${from.cssColor}">${from.name}</b> vous propose une <b>alliance</b>.`
-        : `<b style="color:${from.cssColor}">${from.name}</b> vous demande de cibler <b>${gs.teams[o.target ?? 0]?.name}</b>.`;
-      div.innerHTML = `<div class="o-title">📡 TRANSMISSION ENTRANTE</div>${txt}`;
+        : o.type === 'defend'
+          ? `<b style="color:${from.cssColor}">${from.name}</b> appelle à l'aide : sa base est <b>attaquée</b> !`
+          : `<b style="color:${from.cssColor}">${from.name}</b> vous demande de cibler <b>${gs.teams[o.target ?? 0]?.name}</b>.`;
+      div.innerHTML = `<div class="o-title">${ICONS.radio}TRANSMISSION ENTRANTE</div>${txt}`;
       const btns = document.createElement('div');
       btns.className = 'o-btns';
       const ok = document.createElement('button');
       ok.className = 'tb-btn';
-      ok.textContent = '✔ Accepter';
+      ok.innerHTML = ICONS.check + 'Accepter';
       ok.onclick = () => { this.onOfferAccept(o.id); this.offersSig = ''; };
       const no = document.createElement('button');
       no.className = 'tb-btn';
-      no.textContent = '✖ Refuser';
+      no.innerHTML = ICONS.x + 'Refuser';
       no.onclick = () => { this.onOfferRefuse(o.id); this.offersSig = ''; };
       const timer = document.createElement('span');
       timer.className = 'o-timer';
@@ -663,6 +722,12 @@ export class HUD {
     });
     $('btn-plan-toggle').onclick = () => this.onPlanToggle();
     $('btn-plan-obj').onclick = () => this.onPlanObjective();
+    $('btn-plan-clear').onclick = () => this.onPlanClear();
+    // injecte les icônes SVG dans tous les boutons marqués data-ic
+    document.querySelectorAll<HTMLElement>('[data-ic]').forEach(el => {
+      const ic = ICONS[el.dataset.ic!];
+      if (ic) el.innerHTML = ic + el.textContent!.trim();
+    });
   }
 
   refreshShop(gs: GameState) {
@@ -812,13 +877,13 @@ export class HUD {
   // ================================================================
   //  MENU CONTEXTUEL & RECTANGLE DE SÉLECTION
   // ================================================================
-  openCtxMenu(x: number, y: number, title: string, items: { label: string; cb: () => void }[]) {
+  openCtxMenu(x: number, y: number, title: string, items: { label: string; cb: () => void; ic?: string }[]) {
     const menu = $('ctxmenu');
     menu.innerHTML = `<div class="ctx-title">${title}</div>`;
     for (const it of items) {
       const d = document.createElement('div');
       d.className = 'ctx-item';
-      d.textContent = it.label;
+      d.innerHTML = (it.ic && ICONS[it.ic] ? ICONS[it.ic] : '') + it.label;
       d.onclick = () => { it.cb(); this.closeCtxMenu(); sfx.ui(); };
       menu.appendChild(d);
     }
@@ -856,7 +921,7 @@ export class HUD {
   showGameOver(gs: GameState) {
     const won = gs.winner === gs.playerTeam;
     const title = $('go-title');
-    title.textContent = won ? '★ VICTOIRE ★' : 'DÉFAITE';
+    title.textContent = won ? 'VICTOIRE' : 'DÉFAITE';
     title.className = won ? 'win' : 'lose';
     $('go-reason').textContent = gs.overReason || (won ? '' : `L'équipe ${gs.winner >= 0 ? TEAM_DEFS[gs.winner].name : '?'} l'emporte.`);
     const stats = $('go-stats');
@@ -870,7 +935,7 @@ export class HUD {
       const planets = gs.planets.filter(p => p.alive && p.owner === r.id).length;
       div.innerHTML = `<span class="ts-dot" style="background:${r.t.cssColor}"></span>` +
         `<b>${r.t.name}</b>${r.id === gs.playerTeam ? ' (vous)' : ` — ${PERSONAS[r.t.persona].nom}`}` +
-        `<span style="margin-left:auto">${r.t.alive ? '' : '☠ '} ${r.t.kills} kills · ${planets} colonies · score ${r.score}</span>`;
+        `<span style="margin-left:auto">${r.t.alive ? '' : '[détruite] '} ${r.t.kills} kills · ${planets} colonies · score ${r.score}</span>`;
       stats.appendChild(div);
     }
     $('gameover').classList.remove('hidden');
