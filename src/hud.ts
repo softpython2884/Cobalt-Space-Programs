@@ -7,6 +7,7 @@ import {
   TEAM_DEFS, PIRATE_DEF, NEUTRAL_CSS, STARS, STAR_LIST, PERSONAS, PERSONA_LIST,
   SHIP_CLASSES, BUYABLE_SHIPS, WEAPONS, UPGRADES, GADGETS, GADGET_ORDER, MODES, STRUCTS,
   STATION_UPGRADE_PRICE, STATION_LEVEL_DESC, MINES, DOCK_RANGE, RES_PRICE, ALLIANCE_DURATION,
+  STATION_UPGRADES,
 } from './data';
 import {
   tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, playerShip, teamScore,
@@ -195,20 +196,25 @@ export class HUD {
     $('help-content').innerHTML = `
       <h4>PILOTAGE (AZERTY natif)</h4>
       <span class="kbd">Z</span><span class="kbd">Q</span><span class="kbd">S</span><span class="kbd">D</span> déplacer le vaisseau ·
-      <span class="kbd">Clic gauche</span>/<span class="kbd">Espace</span> arme principale ·
+      <span class="kbd">Espace</span> arme principale ·
       <span class="kbd">A</span> (maintenir) verrouillage missile — relâcher quand le réticule est vert ·
       <span class="kbd">E</span> arme secondaire ·
       <span class="kbd">Clic molette</span> larguer une mine ·
       <span class="kbd">F</span> miner (maintenir près d'un astéroïde/nuage) ·
       <span class="kbd">C</span> prendre le contrôle du vaisseau allié le plus proche
+      <h4>SÉLECTION (clic gauche)</h4>
+      <span class="kbd">1 clic</span> sélectionner un vaisseau · <span class="kbd">2 clics</span> les mêmes de sa flotte
+      (hors flotte : tous les mêmes sans flotte) · <span class="kbd">3 clics</span> toute sa flotte ·
+      En vue tactique : <span class="kbd">2 clics</span> la flotte, <span class="kbd">3 clics</span> tout le type ·
+      <span class="kbd">Glisser</span> rectangle · <span class="kbd">Ctrl</span> ajouter/retirer
       <h4>MODES & GADGETS</h4>
       <span class="kbd">&amp;</span><span class="kbd">é</span><span class="kbd">"</span><span class="kbd">'</span> modes (croisière, radar, espion, saut) ·
       <span class="kbd">(</span><span class="kbd">-</span><span class="kbd">è</span>… gadgets débloqués à la station
       <h4>STRATÉGIE</h4>
       <span class="kbd">Molette</span> zoomer/dézoomer — dézoomez à fond pour la <b>vue tactique</b> ·
-      <span class="kbd">Double-clic</span> sélectionner (double-clic + glisser = rectangle, Ctrl = ajouter) ·
-      <span class="kbd">J</span> diplomatie (alliances, cibles communes) ·
       <span class="kbd">Clic droit</span> menu d'ordres (attaquer, miner, escorter, coloniser…) ·
+      <span class="kbd">Double clic droit</span> menu circulaire de la sélection (missions, formations, doctrine) ·
+      <span class="kbd">J</span> diplomatie (alliances, cibles communes) ·
       En vue tactique : <span class="kbd">ZQSD</span> déplace la carte, panneau à droite pour créer des <b>flottes</b> et choisir les <b>formations</b>
       <h4>ÉCONOMIE</h4>
       <span class="kbd">B</span> construire (avant-poste, mine, satellite) ·
@@ -704,8 +710,16 @@ export class HUD {
 
   private updateOffers(gs: GameState) {
     const mine = gs.diploOffers.filter(o => o.to === gs.playerTeam);
-    const sig = mine.map(o => `${o.id}:${Math.ceil(o.expiresT - gs.t)}`).join('|');
-    if (sig === this.offersSig) return;
+    // ne reconstruit la boîte QUE si les offres changent : le compte à rebours
+    // est mis à jour sur place (sinon le message semble réapparaître chaque seconde)
+    const sig = mine.map(o => String(o.id)).join('|');
+    if (sig === this.offersSig) {
+      for (const o of mine) {
+        const t = document.getElementById(`offer-t-${o.id}`);
+        if (t) t.textContent = `${Math.max(0, Math.ceil(o.expiresT - gs.t))} s`;
+      }
+      return;
+    }
     this.offersSig = sig;
     const box = $('diplo-offers');
     box.innerHTML = '';
@@ -731,6 +745,7 @@ export class HUD {
       no.onclick = () => { this.onOfferRefuse(o.id); this.offersSig = ''; };
       const timer = document.createElement('span');
       timer.className = 'o-timer';
+      timer.id = `offer-t-${o.id}`;
       timer.textContent = `${Math.max(0, Math.ceil(o.expiresT - gs.t))} s`;
       btns.appendChild(ok); btns.appendChild(no); btns.appendChild(timer);
       div.appendChild(btns);
@@ -880,6 +895,14 @@ export class HUD {
         d.textContent = 'Station au niveau maximum.';
         box.appendChild(d);
       }
+      // défenses de la station : mêmes jauges que les améliorations de vaisseau
+      for (const u of STATION_UPGRADES) {
+        const cur = team.upgrades[u.id] ?? 0;
+        const maxed = cur >= u.prix.length;
+        const price = maxed ? 0 : u.prix[cur];
+        addItem(`<span>${u.nom} <b>${'▮'.repeat(cur)}${'▯'.repeat(u.prix.length - cur)}</b> <span class="s-desc">${u.desc}</span></span>`,
+          price, maxed ? null : () => cmd('stationUp', { id: u.id }), { owned: maxed });
+      }
       for (const gid of GADGET_ORDER) {
         const def = GADGETS[gid];
         const owned = team.gadgets.includes(gid);
@@ -923,7 +946,7 @@ export class HUD {
     if (mine.length === 0) {
       const d = document.createElement('div');
       d.className = 'tb-label';
-      d.textContent = 'Aucune flotte. Sélectionnez ≥ 2 vaisseaux puis « Créer flotte ».';
+      d.textContent = 'Aucune flotte. Sélectionnez un ou plusieurs vaisseaux puis « Créer flotte ».';
       box.appendChild(d);
       return;
     }

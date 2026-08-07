@@ -8,10 +8,11 @@ let fleetCounter = 1;
 /** À appeler au démarrage d'une nouvelle partie. */
 export function resetFleetCounter() { fleetCounter = 1; }
 
-/** Crée une flotte à partir d'ids de vaisseaux ; le plus puissant devient chef. */
+/** Crée une flotte à partir d'ids de vaisseaux ; le plus puissant devient chef.
+ *  Une flotte d'un seul vaisseau est valide (il devient chef, prêt à recevoir des missions). */
 export function createFleet(gs: GameState, team: number, shipIds: number[], formation: FormationId = 'coin'): Fleet | null {
   const ships = shipIds.map(id => shipById(gs, id)).filter((s): s is Ship => !!s && s.team === team);
-  if (ships.length < 2) return null;
+  if (ships.length < 1) return null;
   // retire de leurs anciennes flottes
   for (const s of ships) removeFromFleet(gs, s);
   ships.sort((a, b) => SHIP_CLASSES[b.cls].power - SHIP_CLASSES[a.cls].power);

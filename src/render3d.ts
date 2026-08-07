@@ -168,6 +168,12 @@ export class Renderer3D {
     if (this.novaLight) { this.scene.remove(this.novaLight); this.novaLight = null; }
     (this.scene.background as THREE.Color).setHex(0x05070d);
     this.starBuilt = false;
+    while (this.laneGroup.children.length) {
+      const c = this.laneGroup.children[0] as THREE.Mesh;
+      this.laneGroup.remove(c);
+      (c.material as THREE.Material)?.dispose();
+    }
+    this.laneSig = '';
   }
 
   isTactical(): boolean { return this.camH >= TACTICAL_ZOOM; }
@@ -316,6 +322,54 @@ export class Renderer3D {
     }
   }
 
+  // ---------- Autoroutes spatiales : balises coniques sur les routes commerciales actives ----------
+  // Pure décoration : aucune physique, aucune entité de simulation — juste des jalons
+  // qui matérialisent les corridors où les cargos font la navette.
+  private laneGroup = new THREE.Group();
+  private laneAdded = false;
+  private laneSig = '';
+  private laneGeo = new THREE.ConeGeometry(2.6, 7, 4);
+  private syncTradeLanes(gs: GameState) {
+    if (!this.laneAdded) { this.scene.add(this.laneGroup); this.laneAdded = true; }
+    // routes actives : cargo en mission de commerce → (station de l'équipe ↔ planète cible)
+    const routes = new Map<string, { a: V2; b: V2; color: number }>();
+    for (const s of gs.ships) {
+      if (!s.alive || s.order.kind !== 'trade') continue;
+      const planet = gs.planets.find(p => p.id === s.order.targetId && p.alive);
+      const team = gs.teams[s.team];
+      const st = team ? gs.structures.find(x => x.id === team.stationId && x.alive) : undefined;
+      if (!planet || !st) continue;
+      routes.set(`${st.id}:${planet.id}`, { a: st.pos, b: planet.pos, color: team.color });
+    }
+    // reconstruction seulement quand les routes changent (ou toutes les ~6 s, les corps dérivent)
+    const sig = [...routes.keys()].join('|') + '#' + Math.floor(this.time / 6);
+    if (sig !== this.laneSig) {
+      this.laneSig = sig;
+      while (this.laneGroup.children.length) {
+        const c = this.laneGroup.children[0] as THREE.Mesh;
+        this.laneGroup.remove(c);
+        (c.material as THREE.Material)?.dispose();
+      }
+      let total = 0;
+      for (const r of routes.values()) {
+        const d = dist(r.a, r.b);
+        const n = Math.min(10, Math.floor((d - 160) / 95));
+        for (let i = 0; i < n && total < 60; i++, total++) {
+          const t = (i + 1) / (n + 1);
+          const cone = new THREE.Mesh(this.laneGeo,
+            new THREE.MeshBasicMaterial({ color: r.color, transparent: true, opacity: 0.3 }));
+          cone.position.set(r.a.x + (r.b.x - r.a.x) * t, 1.5, r.a.y + (r.b.y - r.a.y) * t);
+          this.laneGroup.add(cone);
+        }
+      }
+    }
+    // pulsation discrète du balisage
+    const pulse = 0.24 + Math.sin(this.time * 2.2) * 0.08;
+    this.laneGroup.children.forEach((c, i) => {
+      ((c as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = pulse + (i % 3) * 0.03;
+    });
+  }
+
   // ---------- Fantôme de construction ----------
   private ghost: THREE.Group | null = null;
   setGhost(pos: V2 | null, radius: number, ok: boolean) {
@@ -354,6 +408,7 @@ export class Renderer3D {
     this.syncEntities(gs, visible, tactical, dt);
     this.syncColossusBeams(gs);
     this.syncSmokes(gs);
+    this.syncTradeLanes(gs);
     this.consumeFx(gs);
     this.updateEffects(dt);
     this.updateCamera(gs, dt, tactical);

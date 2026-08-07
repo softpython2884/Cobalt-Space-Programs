@@ -121,6 +121,9 @@ export interface Structure {
   pendingCredits: number;         // dépôt : valeur stockée (propriétaire), écoulée à débit limité
   pendingAllied: Record<number, number>;  // dépôt : valeur en attente par équipe alliée
   buildT: number;                 // usine d'assemblage : chantier restant (s), 0 = inactif
+  salvoT: number;                 // station : recharge de la salve de missiles (armement niv. 3)
+  aegisT: number;                 // station : bouclier d'urgence actif (s restantes)
+  aegisCd: number;                // station : temps sim où le bouclier d'urgence sera rechargé
   alive: boolean;
 }
 
@@ -321,6 +324,7 @@ export interface GameState {
   allianceSince: Record<string, number>;  // temps sim de formation (expire après 15 min)
   diploOffers: DiploOffer[];   // propositions en attente (surtout vers le joueur)
   focusTargets: Record<number, number>;  // équipe -> cible convenue avec un allié
+  offerMuted: Record<string, number>;    // `${to}:${from}:${type}` -> temps sim de fin de sourdine
 
   storms: StormCloud[];        // nuages électriques (apparaissent en cours de partie)
   stormT: number;              // prochain spawn de nuage

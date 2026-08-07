@@ -14,7 +14,7 @@ import { GameState, MatchConfig, FxEvent, V2, SIM_DT, Stance, PlanFilter, OrderK
 import { newGame } from '../src/world';
 import {
   simTick, applyHumanInput, missileFireCmd, salveFireCmd, colossusWorldBreaker,
-  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation,
+  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, tryBuyStationUpgrade,
   placeStructure, tryUpgradePlanet, buyGuards, activateGadget, toggleMode, tryJump,
   takeControlNearest, dropMine, flagshipOf,
   proposeAlliance, breakAlliance, requestFocus, requestDefend, acceptOffer, refuseOffer,
@@ -146,6 +146,7 @@ function runCmd(gs: GameState, team: number, name: string, a: any): string | nul
     case 'buyWeapon': return tryBuyWeapon(gs, team, a.wid);
     case 'buyGadget': return tryBuyGadget(gs, team, a.gid);
     case 'upgradeStation': return tryUpgradeStation(gs, team);
+    case 'stationUp': return tryBuyStationUpgrade(gs, team, String(a.id));
     case 'place': return placeStructure(gs, team, a.stype, a.pos);
     case 'planetUp': return tryUpgradePlanet(gs, team, a.planetId);
     case 'guards': return buyGuards(gs, team, a.targetId);

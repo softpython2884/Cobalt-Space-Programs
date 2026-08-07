@@ -227,6 +227,32 @@ export const MODES: ModeDef[] = [
   { id: 'saut', nom: 'Saut spatial', icon: '🌀', desc: 'Retour à la base. Consomme toute l\'énergie.' },
 ];
 
+// ---------- Station : améliorations défensives (mêmes codes que les améliorations de vaisseau) ----------
+// Stockées dans team.upgrades sous les clés st_armement / st_blindage / st_urgence.
+export interface StationUpgradeDef { id: string; nom: string; desc: string; prix: number[] }
+export const STATION_UPGRADES: StationUpgradeDef[] = [
+  {
+    id: 'st_armement', nom: 'Armement de station',
+    desc: 'Niv.1 tourelles rapides · Niv.2 rayon à chauffe · Niv.3 salve de 15 missiles',
+    prix: [400, 900, 1600],
+  },
+  {
+    id: 'st_blindage', nom: 'Blindage de station',
+    desc: '+250 de bouclier et recharge accélérée par niveau',
+    prix: [300, 700, 1200],
+  },
+  {
+    id: 'st_urgence', nom: 'Bouclier d\'urgence',
+    desc: 'Sous 60 % de coque : invulnérable 5/8/12 s (recharge 150 s)',
+    prix: [600, 1100, 1800],
+  },
+];
+export const STATION_SALVO_SIZE = 15;      // missiles de la salve (armement niv. 3)
+export const STATION_SALVO_CD = 22;        // s entre deux salves
+export const STATION_BEAM_RANGE = 260;     // rayon à chauffe (armement niv. 2)
+export const AEGIS_DUR = [0, 5, 8, 12];    // durée du bouclier d'urgence par niveau
+export const AEGIS_CD = 150;
+
 // ---------- Station : niveaux ----------
 export const STATION_UPGRADE_PRICE = [0, 1000, 2500];  // vers niveau 2, 3
 export const STATION_LEVEL_DESC = [

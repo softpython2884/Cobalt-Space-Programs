@@ -8,7 +8,7 @@ import { newGame } from './world';
 import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
-  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation,
+  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, tryBuyStationUpgrade,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
   colossusLockTick, colossusSalveRelease, colossusWorldBreaker, colossusStatus,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
@@ -58,8 +58,8 @@ let curFire = false;
 let curFireE = false;
 let introT = 0;                    // intro hypersaut en cours (>0)
 let introStars: { a: number; r: number; sp: number }[] = [];
-let leftHeldT = 0;                 // durée d'appui du clic gauche
-let pendingShot: { t: number; aim: V2 } | null = null;   // tir de clic bref, différé
+// multijoueur : écart position affichée ↔ serveur, résorbé en douceur (anti-saccades)
+const mpErr = new Map<number, { x: number; y: number }>();
 
 window.addEventListener('resize', () => renderer?.resize());
 // l'audio ne peut démarrer qu'après un geste utilisateur
@@ -94,6 +94,7 @@ function localExec(name: string, a: any): string | null {
     case 'buyWeapon': return tryBuyWeapon(gs, team, a.wid);
     case 'buyGadget': return tryBuyGadget(gs, team, a.gid);
     case 'upgradeStation': return tryUpgradeStation(gs, team);
+    case 'stationUp': return tryBuyStationUpgrade(gs, team, a.id);
     case 'place': return placeStructure(gs, team, a.stype, a.pos);
     case 'planetUp': return tryUpgradePlanet(gs, team, a.planetId);
     case 'guards': return buyGuards(gs, team, a.targetId);
@@ -118,7 +119,7 @@ function localExec(name: string, a: any): string | null {
       }
       return null;
     }
-    case 'fleetCreate': return createFleet(gs, team, own(a.ids)) ? null : 'Sélectionnez au moins 2 vaisseaux';
+    case 'fleetCreate': return createFleet(gs, team, own(a.ids)) ? null : 'Sélectionnez au moins 1 vaisseau';
     case 'fleetDisband': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) disbandFleet(gs, f.id); return null; }
     case 'fleetMission': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) setFleetMission(gs, f, a.mission); return null; }
     case 'fleetFormation': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) f.formation = a.frm; return null; }
@@ -230,7 +231,9 @@ function handleInput(dt: number) {
 
   // ---------- Zoom ----------
   if (input.wheel !== 0) {
-    renderer.camH = clamp(renderer.camH * Math.exp(input.wheel * 0.0012), 48, 950);
+    // large champ de vision — encore plus au commandes du Colosse
+    const maxH = ship?.cls === 'colosse' ? 1600 : 1250;
+    renderer.camH = clamp(renderer.camH * Math.exp(input.wheel * 0.0012), 48, maxH);
   }
 
   // ---------- Déplacement : vaisseau (vue action) ou carte (vue tactique) ----------
@@ -331,25 +334,9 @@ function handleInput(dt: number) {
     }
 
     if (!locking) {
-      // maintien : le tir continu ne démarre qu'après un très court délai,
-      // pour que le premier clic d'un double-clic ne parte pas tout seul
-      leftHeldT = input.leftDown ? leftHeldT + dt : 0;
-      const holdFire = input.leftDown && !input.dblHold && leftHeldT > 0.14 && !hud.ctxOpen && !buildMode;
-      curFire = input.down('Space') || holdFire;
-      if (curFire) {
-        if (!mpMode) fireShipWeapon(gs, ship, 0, aim);
-        pendingShot = null;
-      }
-      // clic bref : tir différé de 0,22 s, annulé si un double-clic suit
-      if (pendingShot) {
-        pendingShot.t -= dt;
-        if (input.dblHold || input.leftDown) pendingShot = null;
-        else if (pendingShot.t <= 0) {
-          if (mpMode) curFire = true;
-          else fireShipWeapon(gs, ship, 0, pendingShot.aim);
-          pendingShot = null;
-        }
-      }
+      // le tir est sur ESPACE uniquement : le clic gauche ne sert plus qu'à sélectionner
+      curFire = input.down('Space');
+      if (curFire && !mpMode) fireShipWeapon(gs, ship, 0, aim);
       if (!mpMode && input.down('KeyQ') && !hasMissile) fireShipWeapon(gs, ship, 1, aim);  // A en AZERTY
       curFireE = input.down('KeyE');
       if (!mpMode && curFireE) fireShipWeapon(gs, ship, 2, aim);
@@ -447,9 +434,14 @@ function handleInput(dt: number) {
     else hud.flashHint('Approchez-vous de votre station pour ouvrir la boutique (U).');
   }
 
-  // ---------- Clic gauche : sélection / placement ----------
+  // ---------- Clic gauche : sélection (le tir est sur Espace) ----------
   for (const c of input.clicks) {
-    if (hud.ctxOpen) { hud.closeCtxMenu(); continue; }
+    // un clic hors d'un menu (contextuel ou circulaire) referme les deux
+    if (hud.ctxOpen || hud.radialKind === 'selection') {
+      hud.closeCtxMenu();
+      if (hud.radialKind === 'selection') hud.hideRadial();
+      continue;
+    }
     if (buildMode) {
       const pos = renderer.worldFromScreen(c.x, c.y);
       const err = cmd('place', { stype: buildMode, pos });
@@ -457,26 +449,34 @@ function handleInput(dt: number) {
       else { sfx.buy(); buildMode = null; }
       continue;
     }
-    // vue action : clic simple = tir (différé pour laisser sa chance au double-clic)
-    if (!tactical && !c.dbl) {
-      pendingShot = { t: 0.22, aim: renderer.worldFromScreen(c.x, c.y) };
-      continue;
-    }
     const picked = renderer.pickEntity(gs, c.x, c.y, visibleSet);
     if (picked != null) {
       const s = shipById(gs, picked);
       if (s && s.team === gs.playerTeam) {
         const g4 = gs;
-        if (tactical && c.triple) {
-          // triple-clic : tous les vaisseaux de ce type
-          g4.selection = g4.ships.filter(x => x.alive && x.team === g4.playerTeam && x.cls === s.cls).map(x => x.id);
-        } else if (tactical && c.dbl && s.fleetId != null) {
-          // double-clic : toute la flotte
+        const sameClass = (pred: (x: (typeof g4.ships)[number]) => boolean) =>
+          g4.ships.filter(x => x.alive && x.team === g4.playerTeam && x.cls === s.cls && pred(x)).map(x => x.id);
+        const wholeFleet = (): number[] => {
           const f = g4.fleets.find(f2 => f2.id === s.fleetId);
-          g4.selection = f ? fleetShips(g4, f).map(x => x.id) : [picked];
-        } else if (c.ctrl) {
+          return f ? fleetShips(g4, f).map(x => x.id) : [picked];
+        };
+        if (c.ctrl) {
           if (!g4.selection.includes(picked)) g4.selection.push(picked);
           else g4.selection = g4.selection.filter(id => id !== picked);
+        } else if (c.triple) {
+          // tactique : 3 clics = tout le type ; classique : 3 clics = toute sa flotte
+          g4.selection = tactical ? sameClass(() => true) : wholeFleet();
+        } else if (c.dbl) {
+          // tactique : 2 clics = toute sa flotte ;
+          // classique : 2 clics = les mêmes vaisseaux de sa flotte (hors flotte : les mêmes sans flotte)
+          if (tactical) {
+            g4.selection = wholeFleet();
+          } else if (s.fleetId != null) {
+            const f = g4.fleets.find(f2 => f2.id === s.fleetId);
+            g4.selection = f ? fleetShips(g4, f).filter(x => x.cls === s.cls).map(x => x.id) : [picked];
+          } else {
+            g4.selection = sameClass(x => x.fleetId == null);
+          }
         } else {
           g4.selection = [picked];
         }
@@ -488,8 +488,8 @@ function handleInput(dt: number) {
     if (!c.ctrl) gs.selection = [];
   }
 
-  // ---------- Rectangle de sélection ----------
-  if (input.dragStart && input.dragEnd && !buildMode && (tactical || input.dblHold)) {
+  // ---------- Rectangle de sélection (le glisser sélectionne dans les deux vues) ----------
+  if (input.dragStart && input.dragEnd && !buildMode) {
     hud.setSelectBox({
       x0: Math.min(input.dragStart.x, input.dragEnd.x), y0: Math.min(input.dragStart.y, input.dragEnd.y),
       x1: Math.max(input.dragStart.x, input.dragEnd.x), y1: Math.max(input.dragStart.y, input.dragEnd.y),
@@ -497,7 +497,7 @@ function handleInput(dt: number) {
   } else {
     hud.setSelectBox(null);
   }
-  if (input.dragDone && !buildMode && (tactical || input.dragDone.fromDouble)) {
+  if (input.dragDone && !buildMode) {
     const r = input.dragDone;
     const picked: number[] = [];
     for (const s of gs.ships) {
@@ -515,7 +515,10 @@ function handleInput(dt: number) {
 
   // ---------- Clic droit : radial (double/Alt), plan, ou ordres contextuels ----------
   for (const c of input.rightClicks) {
-    if ((c.dbl || input.down('AltLeft')) && planMode === 'off') {
+    if (hud.radialKind === 'selection') hud.hideRadial();
+    if ((c.dbl || input.down('AltLeft')) && planMode === 'off'
+      && gs.selection.some(id => shipById(gs!, id))) {
+      // le menu circulaire de sélection n'existe que s'il y a des vaisseaux sélectionnés
       openSelectionRadial(c.x, c.y);
       continue;
     }
@@ -577,7 +580,7 @@ function handleInput(dt: number) {
   hud.onFleetCreate = () => {
     if (!gs) return;
     const ids = gs.selection.filter(id => id !== gs!.playerShipId);
-    if (ids.length < 2) { hud.flashHint('Sélectionnez au moins 2 vaisseaux (hors amiral).'); sfx.error(); return; }
+    if (ids.length < 1) { hud.flashHint('Sélectionnez au moins 1 vaisseau (hors amiral).'); sfx.error(); return; }
     const err = cmd('fleetCreate', { ids });
     if (!err) sfx.buy(); else { sfx.error(); hud.flashHint(err); }
   };
@@ -660,10 +663,55 @@ let hoverPlanetId = -1;
 
 function openSelectionRadial(sx: number, sy: number) {
   if (!gs || !renderer) return;
-  const sel = gs.selection.filter(id => shipById(gs!, id));
+  const g = gs;
+  const sel = g.selection.filter(id => shipById(g, id));
+  if (sel.length === 0) return;
   const worldPos = renderer.worldFromScreen(sx, sy);
+  const orderables = sel.filter(id => id !== g.playerShipId);
+  hud.closeCtxMenu();   // le 1er clic du double a pu ouvrir le menu classique : le radial le remplace
   const items: Parameters<typeof hud.showRadial>[3] = [];
-  if (sel.length >= 2) {
+
+  // --- actions contextuelles sur ce qui est sous le curseur (tout le menu classique y est) ---
+  const picked = renderer.pickEntity(g, sx, sy, visibleSet);
+  const pShip = picked != null ? shipById(g, picked) : undefined;
+  const pStruct = picked != null ? structById(g, picked) : undefined;
+  const pPlanet = picked != null ? planetById(g, picked) : undefined;
+  const pRoid = picked != null ? g.roids.find(r => r.id === picked && r.alive) : undefined;
+  const pCloud = picked != null ? g.clouds.find(cc => cc.id === picked && cc.alive) : undefined;
+  const pWreck = picked != null ? g.wrecks.find(w => w.id === picked && w.alive) : undefined;
+  const hostile = (team: number) => team !== g.playerTeam && !areAllied(g, g.playerTeam, team);
+  if (orderables.length > 0) {
+    const foeId = (pShip && hostile(pShip.team)) ? pShip.id
+      : (pStruct && hostile(pStruct.team)) ? pStruct.id
+      : (pPlanet && pPlanet.owner >= 0 && hostile(pPlanet.owner)) ? pPlanet.id : null;
+    if (foeId != null) {
+      items.push({ ic: 'crosshair', label: 'Attaquer', cb: () => cmd('order', { ids: orderables, order: { kind: 'attack', targetId: foeId } }) });
+    }
+    if (pShip && pShip.team === g.playerTeam && !orderables.includes(pShip.id)) {
+      items.push({ ic: 'shield', label: 'Escorter', cb: () => cmd('order', { ids: orderables, order: { kind: 'escort', targetId: pShip.id } }) });
+    }
+    if (pRoid || pCloud) {
+      const mid = (pRoid ?? pCloud)!.id;
+      items.push({ ic: 'pick', label: 'Miner ici', cb: () => cmd('order', { ids: orderables, order: { kind: 'mine', targetId: mid } }) });
+    }
+    if (pWreck) {
+      items.push({ ic: 'box', label: 'Récup. épave', cb: () => cmd('order', { ids: orderables, order: { kind: 'salvage', targetId: pWreck.id } }) });
+    }
+    if (pPlanet && pPlanet.owner < 0 && orderables.some(id => SHIP_CLASSES[shipById(g, id)!.cls].canColonize)) {
+      items.push({ ic: 'flag', label: 'Coloniser', cb: () => cmd('order', { ids: orderables, order: { kind: 'colonize', targetId: pPlanet.id } }) });
+    }
+    if (pPlanet && pPlanet.owner === g.playerTeam) {
+      items.push({ ic: 'route', label: 'Commercer', cb: () => cmd('order', { ids: orderables, order: { kind: 'trade', targetId: pPlanet.id } }) });
+    }
+    const bodyToProtect = (pStruct && pStruct.team === g.playerTeam) ? pStruct
+      : (pPlanet && pPlanet.owner === g.playerTeam) ? pPlanet : null;
+    const armedSel = orderables.filter(id => {
+      const sh = shipById(g, id);
+      return sh && SHIP_CLASSES[sh.cls].power > 3;
+    });
+    if (bodyToProtect && armedSel.length > 0) {
+      items.push({ ic: 'orbit', label: 'Protéger corps', cb: () => cmd('protect', { ids: armedSel, targetId: bodyToProtect.id }) });
+    }
     items.push({ ic: 'plus', label: 'Créer flotte', cb: () => hud.onFleetCreate() });
   }
   items.push({
@@ -696,17 +744,24 @@ function openSelectionRadial(sx: number, sy: number) {
       { ic: 'ban', label: 'Ne pas tirer', cb: () => hud.onStance('paix') },
     ],
   });
-  items.push({ ic: 'arrow', label: 'Venir ici', cb: () => cmd('order', { ids: sel.filter(id => id !== gs!.playerShipId), order: { kind: 'move', pos: worldPos } }) });
-  items.push({ ic: 'home', label: 'Retour station', cb: () => cmd('order', { ids: sel.filter(id => id !== gs!.playerShipId), order: { kind: 'dock' } }) });
+  items.push({ ic: 'arrow', label: 'Venir ici', cb: () => cmd('order', { ids: orderables, order: { kind: 'move', pos: worldPos } }) });
+  items.push({ ic: 'shield', label: 'Garder ici', cb: () => cmd('order', { ids: orderables, order: { kind: 'guard', pos: worldPos } }) });
+  items.push({ ic: 'home', label: 'Retour station', cb: () => cmd('order', { ids: orderables, order: { kind: 'dock' } }) });
   items.push({ ic: 'x', label: 'Dissoudre', cb: () => hud.onFleetDisband() });
-  hud.showRadial('selection', sx, sy, items, `${sel.length || 0} vsx`);
+  hud.showRadial('selection', sx, sy, items, `${sel.length} vsx`);
 }
 
-/** Radiaux automatiques : station à l'approche du vaisseau, corps au survol du curseur. */
+/** Radiaux automatiques : station à l'approche du vaisseau, corps au survol du curseur.
+ *  En vue tactique (ou fort dézoom), ils sont masqués : le clic droit classique prend le relais. */
 function updateRadials(aim: V2) {
   if (!gs || !renderer) return;
   const ship = playerShip(gs);
   const kind = hud.radialKind;
+  // vue tactique / fort dézoom : TOUS les menus circulaires se masquent (même celui de sélection)
+  if (renderer.isTactical() || renderer.camH > 200) {
+    if (kind) hud.hideRadial();
+    return;
+  }
   if (kind === 'selection') return;   // fermé par clic / action
 
   // --- station : menu qui apparaît quand on s'amarre ---
@@ -1000,9 +1055,19 @@ function frame(now: number) {
   if (gs.status === 'playing') handleInput(elapsed);
 
   if (mpMode) {
-    // le serveur simule ; ici : estime légère entre deux instantanés
+    // le serveur simule ; ici : estime entre deux instantanés + résorption douce de l'écart
     if (gs.status === 'playing') {
-      for (const sh of gs.ships) { sh.pos.x += sh.vel.x * elapsed; sh.pos.y += sh.vel.y * elapsed; }
+      const decay = Math.exp(-9 * elapsed);   // l'écart fond en ~0,25 s
+      for (const sh of gs.ships) {
+        sh.pos.x += sh.vel.x * elapsed; sh.pos.y += sh.vel.y * elapsed;
+        const e = mpErr.get(sh.id);
+        if (e) {
+          const k = 1 - decay;
+          sh.pos.x -= e.x * k; sh.pos.y -= e.y * k;
+          e.x *= decay; e.y *= decay;
+          if (Math.abs(e.x) + Math.abs(e.y) < 0.05) mpErr.delete(sh.id);
+        }
+      }
       for (const pr of gs.projectiles) { pr.pos.x += pr.vel.x * elapsed; pr.pos.y += pr.vel.y * elapsed; }
       gs.t += elapsed;
       if (gs.alertT > 0) gs.alertT -= elapsed;
@@ -1133,14 +1198,19 @@ function applySnap(snap: GameState) {
   gs.selection = prevSel.filter(id => gs!.ships.some(sh => sh.id === id));
   const flag = gs.ships.find(sh => sh.alive && sh.isFlagship && sh.team === gs!.playerTeam);
   gs.playerShipId = flag?.id ?? -1;
-  // correction douce des positions (anti-saccades) : notre vaisseau converge
-  // lentement, les autres un peu plus vite — l'estime fait le reste
+  // anti-saccades : la position AFFICHÉE ne bouge pas à l'arrivée d'un instantané —
+  // on note l'écart avec le serveur et on le résorbe en douceur à chaque frame.
+  // Écart énorme (saut spatial, réapparition) : téléportation instantanée, sans lissage.
   for (const sh of gs.ships) {
     const op = oldPos.get(sh.id);
-    if (!op) continue;
-    const alpha = sh.id === gs.playerShipId ? 0.22 : 0.5;
-    sh.pos.x = op.x + (sh.pos.x - op.x) * alpha;
-    sh.pos.y = op.y + (sh.pos.y - op.y) * alpha;
+    if (!op) { mpErr.delete(sh.id); continue; }
+    const ex = op.x - sh.pos.x, ey = op.y - sh.pos.y;
+    if (Math.hypot(ex, ey) > 90) { mpErr.delete(sh.id); continue; }
+    mpErr.set(sh.id, { x: ex, y: ey });
+    sh.pos.x += ex; sh.pos.y += ey;
+  }
+  for (const id of [...mpErr.keys()]) {
+    if (!gs.ships.some(sh => sh.id === id)) mpErr.delete(id);
   }
   // conserve la progression de verrouillage locale (visuel)
   if (flag && input.down('KeyQ')) flag.lockT = mpLockT;
@@ -1154,6 +1224,7 @@ function leaveMp(msg = '') {
   net?.leave();
   net = null;
   mpMode = false;
+  mpErr.clear();
   gs = null;
   paused = false;
   introT = 0;
@@ -1184,6 +1255,7 @@ async function mpConnect(addr: string): Promise<boolean> {
 function startNetGame() {
   mpMode = true;
   mpFirstSnap = true;
+  mpErr.clear();
   setCmdExec((n, a) => { net?.cmd(n, a); return null; });
   gs = null;
   overShown = false;

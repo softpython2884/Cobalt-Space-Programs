@@ -3,13 +3,33 @@ import {
   GameState, Ship, V2, v2, fromAngle, dist, len, scale, norm, sub, add, IDLE,
   PIRATE_TEAM, WORLD_R, addLog, setAlert, shipById, structById, areAllied,
 } from './core';
-import { SHIP_CLASSES, PERSONAS, STRUCTS, COLONIZE_COST, STATION_UPGRADE_PRICE, DIFF_TUNING } from './data';
-import { makeShip, nearestShip, threatAround, canDetect, isEnemy } from './entities';
+import {
+  SHIP_CLASSES, PERSONAS, STRUCTS, COLONIZE_COST, STATION_UPGRADE_PRICE, DIFF_TUNING, DiffTuning,
+  STATION_UPGRADES, COLOSSE_LABS_REQUIRED, WEAPONS,
+} from './data';
+import { makeShip, nearestShip, nearestStruct, threatAround, canDetect, isEnemy } from './entities';
 import { createFleet, setFleetMission, fleetShips } from './orders';
 import {
   tryBuyShip, tryUpgradeStation, canPlaceStructure, placeStructure, teamScore,
-  proposeAlliance, requestFocus, requestDefend,
+  proposeAlliance, requestFocus, requestDefend, tryBuyStationUpgrade,
+  salveFireCmd, colossusWorldBreaker,
 } from './sim';
+
+/** Réglages de difficulté effectifs : en facile, l'IA monte en puissance au fil
+ *  de la partie (débuts tranquilles, mais il finit par se passer des choses). */
+export function effectiveTune(gs: GameState): DiffTuning {
+  const t = DIFF_TUNING[gs.cfg.difficulty];
+  if (gs.cfg.difficulty !== 'facile') return t;
+  const ramp = Math.min(1, Math.max(0, gs.t / 60 - 10) / 20);   // 0 à 10 min → plein régime à 30 min
+  return {
+    ...t,
+    warshipMult: t.warshipMult + (1.0 - t.warshipMult) * ramp,
+    aggroMult: t.aggroMult + (1.0 - t.aggroMult) * ramp,
+    buildMult: t.buildMult + (0.9 - t.buildMult) * ramp,
+    thinkMult: t.thinkMult + (1.0 - t.thinkMult) * ramp,
+    lateRamp: t.lateRamp + 0.04 * ramp,
+  };
+}
 
 // ================================================================
 //  PIRATES — la flotte grise
@@ -87,7 +107,7 @@ export function thinkTeams(gs: GameState, dt: number) {
     if (!team || !team.alive || !team.isAI) continue;
     team.aiCd -= dt;
     if (team.aiCd > 0) continue;
-    team.aiCd = (2.2 + gs.rng() * 1.2) * DIFF_TUNING[gs.cfg.difficulty].thinkMult;
+    team.aiCd = (2.2 + gs.rng() * 1.2) * effectiveTune(gs).thinkMult;
     thinkOneTeam(gs, teamId);
   }
 }
@@ -95,9 +115,17 @@ export function thinkTeams(gs: GameState, dt: number) {
 function thinkOneTeam(gs: GameState, teamId: number) {
   const team = gs.teams[teamId];
   const persona = PERSONAS[team.persona];
-  const tune = DIFF_TUNING[gs.cfg.difficulty];
+  const tune = effectiveTune(gs);
   const station = structById(gs, team.stationId);
   if (!station) return;
+
+  // ---------- 0. ESCALADE : un Colosse ennemi rôde, ou on est le dernier survivant IA ----------
+  // Dans les deux cas, l'IA passe en économie de guerre et frappe bien plus fort.
+  const colossusThreat = gs.ships.some(sh => sh.alive && sh.cls === 'colosse' && isEnemy(teamId, sh.team));
+  const aliveTeams = gs.activeTeams.filter(id => gs.teams[id].alive);
+  const aliveAIs = aliveTeams.filter(id => gs.teams[id].isAI);
+  const escalate = colossusThreat || (aliveAIs.length === 1 && aliveAIs[0] === teamId && aliveTeams.length >= 2);
+  if (escalate) team.credits += 26;   // mobilisation générale : toute l'industrie tourne pour la guerre
 
   const myShips = gs.ships.filter(s => s.alive && s.team === teamId && s.supportT <= 0);
   const miners = myShips.filter(s => s.cls === 'mineur');
@@ -128,17 +156,46 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     }
   }
 
+  // ---------- 1bis. PROJET COLOSSE : des labos dans les nuages, puis l'usine ----------
+  // Les labos démarrent vers 12 min ; l'usine (donc le Colosse) reste un objectif d'après 20 min.
+  // Ce bloc passe AVANT les achats militaires : sinon les vaisseaux mangent tout le budget.
+  const myLabs = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'labo').length;
+  const wantColossus = !team.colossusUsed && minute > 12
+    && (escalate || persona.aggression > 0.4 || minute > 25);
+  const savingColossus = wantColossus && myLabs < COLOSSE_LABS_REQUIRED;
+  if (wantColossus) {
+    if (savingColossus && team.credits > STRUCTS.labo.prix + 100) {
+      // essaie tous les nuages : les rivaux snipent les labos, il faut être tenace
+      outer: for (const storm of gs.storms) {
+        if (!storm.alive) continue;
+        for (let tries = 0; tries < 8; tries++) {
+          const pos = add(storm.pos, fromAngle(gs.rng() * Math.PI * 2, gs.rng() * storm.radius * 0.7));
+          if (!canPlaceStructure(gs, teamId, 'labo', pos)) { placeStructure(gs, teamId, 'labo', pos); break outer; }
+        }
+      }
+    } else if (!savingColossus && minute > 20 && team.credits > STRUCTS.usine.prix + 50) {
+      for (let tries = 0; tries < 6; tries++) {
+        const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 150 + gs.rng() * 200));
+        if (!canPlaceStructure(gs, teamId, 'usine', pos)) { placeStructure(gs, teamId, 'usine', pos); break; }
+      }
+    }
+  }
+
   // ---------- 2. ÉCONOMIE : effectifs voulus ----------
   const wantMiners = Math.round(1 + persona.ecoFocus * 2.5);
   const wantCargos = myPlanets.length > 0 ? Math.round(1 + persona.ecoFocus * 1.5) : 0;
   const wantTransporters = neutralPlanets.length > 0 && minute > 1.5 ? 1 : 0;
-  const wantWarships = Math.max(1, Math.min(9, Math.round((1 + persona.aggression * 3 + minute / 3.5) * tune.warshipMult)));
+  const wantWarships = Math.max(1, Math.min(escalate ? 14 : 9,
+    Math.round((1 + persona.aggression * 3 + minute / 3.5) * tune.warshipMult) + (escalate ? 4 : 0)));
 
-  // réserve d'argent selon la personnalité (+ budget gelé pour une colonisation en cours)
+  // réserve d'argent selon la personnalité (+ budget gelé pour une colonisation en cours,
+  // + épargne pour le prochain laboratoire du projet Colosse)
   const colonizeReserve = transporters.some(t => t.order.kind === 'colonize') ? COLONIZE_COST : 0;
-  const reserve = 150 + persona.defense * 250 + colonizeReserve;
+  const savingUsine = wantColossus && !savingColossus && minute > 18;
+  const reserve = (escalate ? 60 : 150 + persona.defense * 250) + colonizeReserve
+    + (savingColossus ? 380 : 0) + (savingUsine ? 1500 : 0);
   let purchases = 0;
-  const canBuy = (price: number) => team.credits - price > reserve && purchases < 2;
+  const canBuy = (price: number) => team.credits - price > reserve && purchases < (escalate ? 3 : 2);
 
   if (miners.length < wantMiners && canBuy(SHIP_CLASSES.mineur.prix)) {
     if (!tryBuyShip(gs, teamId, 'mineur', false)) purchases++;
@@ -162,9 +219,16 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 
   // ---------- 3. AMÉLIORATION DE STATION ----------
-  if (station.level < 3 && minute > station.level * 3.5) {
+  if (station.level < 3 && (escalate || minute > station.level * 3.5)) {
     const price = STATION_UPGRADE_PRICE[station.level];
     if (team.credits - price > reserve * 0.5) tryUpgradeStation(gs, teamId);
+  }
+  // défenses de station : un survivant aux abois blinde sa base, les autres s'y mettent
+  // sur le tard — sans engloutir l'économie (le projet Colosse passe avant)
+  if ((escalate && team.credits > 900 && gs.rng() < 0.4)
+    || (minute > 12 && team.credits > 2400 && gs.rng() < 0.08)) {
+    const u = STATION_UPGRADES[Math.floor(gs.rng() * STATION_UPGRADES.length)];
+    tryBuyStationUpgrade(gs, teamId, u.id);
   }
 
   // ---------- 4. CONSTRUCTION (cadence selon la difficulté, avant-postes plafonnés) ----------
@@ -178,6 +242,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
       if (!canPlaceStructure(gs, teamId, stype, pos)) { placeStructure(gs, teamId, stype, pos); break; }
     }
   }
+
 
   // ---------- 5. ORDRES ÉCONOMIQUES ----------
   for (const m of miners) if (m.order.kind === 'idle' || m.order.kind === 'guard') m.order = { kind: 'mine' };
@@ -228,7 +293,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 
   // l'agressivité monte en fin de partie pour garantir une conclusion
   const lateGame = Math.max(0, minute - 12) * tune.lateRamp;
-  const aggression = Math.min(1, (persona.aggression + lateGame) * tune.aggroMult);
+  const aggression = Math.min(1, Math.max(escalate ? 0.8 : 0, (persona.aggression + lateGame) * tune.aggroMult));
   const readyForWar = warships.length >= Math.max(2, wantWarships * 0.7);
 
   // flottes d'attaque existantes : retarder si la cible est morte
@@ -238,7 +303,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
       ?? structById(gs, f.mission.targetId ?? -1)
       ?? gs.planets.find(p => p.id === f.mission.targetId && p.alive && p.owner >= 0);
     if (!valid) {
-      const target = pickAttackTarget(gs, teamId, persona.raid, minute);
+      const target = pickAttackTarget(gs, teamId, persona.raid, minute, escalate);
       if (target != null) setFleetMission(gs, f, { kind: 'attack', targetId: target });
     }
   }
@@ -251,9 +316,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     }
   }
 
-  const maxAttackFleets = minute > 14 ? 2 : 1;
+  const maxAttackFleets = (minute > 14 || escalate) ? 2 : 1;
   if (attackFleets.length < maxAttackFleets && readyForWar && gs.rng() < aggression * 0.35 + 0.05) {
-    const target = pickAttackTarget(gs, teamId, persona.raid, minute);
+    const target = pickAttackTarget(gs, teamId, persona.raid, minute, escalate);
     if (target != null) {
       const attackers = idleWar.length >= 2 ? idleWar : warships.filter(w => w.fleetId == null);
       const grp = attackers.slice(0, Math.max(2, Math.ceil(attackers.length * (0.5 + aggression * 0.5))));
@@ -267,7 +332,21 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 
   // ---------- 7. AMIRAL ----------
-  if (flagship && (flagship.order.kind === 'idle')) {
+  // Un Colosse IA ne patrouille pas : il marche sur l'ennemi et vide ses armes.
+  if (flagship && flagship.cls === 'colosse') {
+    if (flagship.order.kind === 'idle' || flagship.order.kind === 'guard') {
+      const foeSt = nearestStruct(gs, flagship.pos, x => isEnemy(teamId, x.team) && x.stype === 'station', Infinity);
+      if (foeSt) flagship.order = { kind: 'attack', targetId: foeSt.id };
+    }
+    // salve de l'Apocalypse dès que 3 cibles se présentent (validation par la sim)
+    const inRange = gs.ships.filter(x => x.alive && isEnemy(teamId, x.team) && x.cloakT <= 0
+      && dist(x.pos, flagship.pos) < WEAPONS.salve.range);
+    if (inRange.length >= 3) salveFireCmd(gs, teamId, inRange.slice(0, 8).map(x => x.id));
+    // Brise-Monde sur toute colonie ennemie à portée
+    const prey = gs.planets.find(pl => pl.alive && pl.dyingT === 0 && pl.owner >= 0
+      && isEnemy(teamId, pl.owner) && dist(pl.pos, flagship.pos) < WEAPONS.brise_monde.range);
+    if (prey) colossusWorldBreaker(gs, flagship, prey.pos);
+  } else if (flagship && (flagship.order.kind === 'idle')) {
     if (persona.aggression > 0.6 && warships.length >= 2 && gs.rng() < 0.4) {
       // l'amiral agressif accompagne ses flottes
       const fleet = gs.fleets.find(f => f.team === teamId && f.mission.kind === 'attack');
@@ -287,16 +366,31 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 }
 
 /** Choisit une cible d'attaque : civils (raid), colonies/structures (harcèlement), stations (fin de partie). */
-function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number): number | null {
-  const tune = DIFF_TUNING[gs.cfg.difficulty];
+function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number, ignoreGrace = false): number | null {
+  const tune = effectiveTune(gs);
   // PRIORITÉ ABSOLUE : un chantier de Colosse ennemi doit tomber (ignore toute grâce)
   const usine = gs.structures.find(st => st.alive && st.stype === 'usine' && st.buildT > 0
     && isEnemy(teamId, st.team));
   if (usine) return usine.id;
+  // des laboratoires qui s'accumulent = un Colosse en préparation : on frappe la recherche
+  const labsByTeam = new Map<number, number[]>();
+  for (const st of gs.structures) {
+    if (!st.alive || st.stype !== 'labo' || !isEnemy(teamId, st.team)) continue;
+    const arr = labsByTeam.get(st.team) ?? [];
+    arr.push(st.id);
+    labsByTeam.set(st.team, arr);
+  }
+  let dangerLab: number | null = null, dangerCount = 0;
+  for (const ids of labsByTeam.values()) {
+    if (ids.length > dangerCount) { dangerCount = ids.length; dangerLab = ids[0]; }
+  }
+  // (probabiliste : la pression est réelle mais un bâtisseur tenace garde une chance)
+  if (dangerLab != null && dangerCount >= COLOSSE_LABS_REQUIRED - 1 && gs.rng() < 0.6) return dangerLab;
+  if (dangerLab != null && dangerCount >= 2 && minute >= tune.harassMin && gs.rng() < 0.25) return dangerLab;
   if (minute < tune.harassMin) return null;
   // période de grâce : l'IA laisse le joueur s'installer avant de le viser
   const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id)
-    && !(id === gs.playerTeam && !gs.teams[id].isAI && minute < tune.playerGraceMin));
+    && !(id === gs.playerTeam && !gs.teams[id].isAI && !ignoreGrace && minute < tune.playerGraceMin));
   if (enemies.length === 0) return null;
 
   // cible : 60 % l'équipe la plus faible (au score), 40 % la plus proche — évite

@@ -15,6 +15,7 @@ import {
   LABO_INCOME, LABO_INCOME_PERIOD, GUARD_COST, GUARD_COMP,
   DEPOT_RATE, DEPOT_CAP, DEPOT_ALLY_BONUS, ALLY_TRADE_MULT, ALLIANCE_DURATION, PLANET_UPGRADE_COST, PLANET_UPGRADE_HP, DIFF_TUNING,
   COLOSSE_LABS_REQUIRED, COLOSSE_BUILD_TIME, COLOSSE_RAY_COUNT, COLOSSE_RAY_RANGE, COLOSSE_SALVO_SIZE,
+  STATION_UPGRADES, STATION_SALVO_SIZE, STATION_SALVO_CD, STATION_BEAM_RANGE, AEGIS_DUR, AEGIS_CD,
 } from './data';
 import {
   makeRoid, makeCloud,
@@ -99,7 +100,8 @@ export function simTick(gs: GameState, dt: number) {
       } else {
         // l'IA propose le renouvellement au joueur
         const ai = a2 === gs.playerTeam ? b2 : a2;
-        if (gs.teams[ai]?.isAI && aiAcceptsAlliance(gs, ai, gs.playerTeam)) {
+        if (gs.teams[ai]?.isAI && aiAcceptsAlliance(gs, ai, gs.playerTeam)
+          && !offerIsMuted(gs, ai, gs.playerTeam, 'alliance')) {
           gs.diploOffers.push({ id: gs.nextId++, from: ai, to: gs.playerTeam, type: 'alliance', expiresT: gs.t + 110 });
           addLog(gs, `${gs.teams[ai].name} souhaite renouveler votre alliance.`, gs.teams[ai].cssColor);
         }
@@ -536,8 +538,12 @@ function execOrder(gs: GameState, s: Ship, dt: number) {
       const foe = mayEngage(gs, s) ? findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.8) : null;
       if (foe && SHIP_CLASSES[s.cls].power > 3 && dist(home, foe.pos) < 320) {
         combatApproach(gs, s, foe.pos, foePriority(foe), dt);
-      } else {
+      } else if (dist(s.pos, home) > 130) {
         arrive(gs, s, home, dt, 25);
+      } else {
+        // garde = ronde dans un petit périmètre autour du point, pas du surplace
+        const wp = add(home, fromAngle(s.avoidSeed + gs.t * 0.32, 34 + Math.sin(s.avoidSeed * 3 + gs.t * 0.13) * 22));
+        moveToward(gs, s, wp, dt, 6);
       }
       break;
     }
@@ -565,6 +571,12 @@ function execOrder(gs: GameState, s: Ship, dt: number) {
       if (SHIP_CLASSES[s.cls].power > 3 && gs.t - s.lastDmgT < 4 && stanceOf(gs, s) !== 'paix') {
         const foe = findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.8);
         if (foe) { combatApproach(gs, s, foe.pos, foe, dt); break; }
+      }
+      // doctrine « à vue » : les escortes armées engagent tout ennemi à portée
+      // sans abandonner leur poste (elles reviennent quand la menace sort du rayon)
+      if (SHIP_CLASSES[s.cls].power > 3 && stanceOf(gs, s) === 'feu') {
+        const foe = findFoeNear(gs, s, s.pos, SHIP_CLASSES[s.cls].sensor * 0.75);
+        if (foe && dist(foe.pos, lead.pos) < 420) { combatApproach(gs, s, foe.pos, foe, dt); break; }
       }
       const f = gs.fleets.find(f => f.id === s.fleetId);
       if (f && f.leaderId === lead.id) {
@@ -688,8 +700,8 @@ function combatApproach(gs: GameState, s: Ship, targetPos: V2, target: Ship | St
     }
   }
 
-  // en combat rapproché, l'IA largue parfois une de ses bombes
-  if (!isHumanFlag(gs, s) && s.mineCount > 0 && d < 70 && gs.rng() < dt * 0.25) {
+  // en combat rapproché, l'IA largue une de ses bombes (EMP, frag ou aimant selon la classe)
+  if (!isHumanFlag(gs, s) && s.mineCount > 0 && d < 120 && gs.rng() < dt * 0.5) {
     dropMine(gs, s, targetPos);
   }
 }
@@ -740,6 +752,23 @@ function avoidHazards(gs: GameState, s: Ship): V2 {
     const d = len(s.pos);
     if (d < gs.map.killRadius + 220) out = add(out, scale(norm(s.pos), 2));
   }
+  // contournement des obstacles solides : on glisse sur le côté au lieu de buter dessus
+  const dodge = (pos: V2, radius: number) => {
+    const clear = radius + s.radius + 34;
+    const dx = s.pos.x - pos.x, dy = s.pos.y - pos.y;
+    if (Math.abs(dx) > clear || Math.abs(dy) > clear) return;
+    const d = Math.hypot(dx, dy);
+    if (d >= clear || d < 0.01) return;
+    const away = { x: dx / d, y: dy / d };
+    // composante latérale : on choisit le côté selon le cap actuel, pour glisser autour
+    const side = (away.x * Math.sin(s.heading) - away.y * Math.cos(s.heading)) >= 0 ? 1 : -1;
+    const lat = { x: -away.y * side, y: away.x * side };
+    const w = (clear - d) / clear;
+    out = add(out, add(scale(away, w * 1.6), scale(lat, w * 1.1)));
+  };
+  for (const st of gs.structures) if (st.alive) dodge(st.pos, st.radius);
+  for (const p of gs.planets) if (p.alive) dodge(p.pos, p.radius);
+  for (const r of gs.roids) if (r.alive && r.radius > 6) dodge(r.pos, r.radius);
   return out;
 }
 
@@ -747,6 +776,9 @@ function avoidHazards(gs: GameState, s: Ship): V2 {
 function mineBehavior(gs: GameState, s: Ship, dt: number) {
   const team = gs.teams[s.team];
   s.miningRes = null;
+  // une épave à deux pas ? petit détour rentable (ramassage auto en passant dessus)
+  const wreck = gs.wrecks.find(w => w.alive && dist(w.pos, s.pos) < 160);
+  if (wreck && cargoTotal(s) < s.cargoMax - 0.5) { moveToward(gs, s, wreck.pos, dt, 4); return; }
   if (cargoTotal(s) >= s.cargoMax - 0.5) {
     // point de dépôt le plus proche : dépôt (non plein) ou station, chez soi ou chez un allié
     const candidates: Structure[] = gs.structures.filter(x => x.alive
@@ -1073,7 +1105,11 @@ export function applyDamage(gs: GameState, target: Ship | Structure, dmg: number
     if (target.smokeT > 0 && !environmental) dmg *= 0.55;
     target.lastDmgT = gs.t;
   }
-  if (target.kind === 'structure') target.lastDmgT = gs.t;
+  if (target.kind === 'structure') {
+    target.lastDmgT = gs.t;
+    // bouclier d'urgence : la station encaisse tout sans une égratignure
+    if (target.aegisT > 0) { gs.fx.push({ type: 'bulle', pos: { ...target.pos }, size: target.radius + 12 }); return; }
+  }
   // bouclier d'abord
   const absorbed = Math.min(target.shield, dmg);
   target.shield -= absorbed;
@@ -1190,19 +1226,67 @@ function updateStructures(gs: GameState, dt: number) {
     const def = STRUCTS[st.stype];
     st.fireCd = Math.max(0, st.fireCd - dt);
 
+    // améliorations défensives de l'équipe propriétaire (st_armement / st_blindage / st_urgence)
+    const owner0 = gs.teams[st.team];
+    const armLvl = st.stype === 'station' ? (owner0?.upgrades['st_armement'] ?? 0) : 0;
+    const blindLvl = st.stype === 'station' ? (owner0?.upgrades['st_blindage'] ?? 0) : 0;
+    const aegisLvl = st.stype === 'station' ? (owner0?.upgrades['st_urgence'] ?? 0) : 0;
+
     // bouclier des structures : régénère après 10 s sans dégât (coupé en mort subite)
     if (st.shield < st.shieldMax && gs.t < SUDDEN_DEATH_T && gs.t - st.lastDmgT > 10) {
-      st.shield = clamp(st.shield + 7 * dt, 0, st.shieldMax);
+      st.shield = clamp(st.shield + (7 + blindLvl * 4) * dt, 0, st.shieldMax);
     }
 
-    // tourelle
+    // bouclier d'urgence : se déclenche seul quand la coque passe sous 60 %
+    st.aegisT = Math.max(0, st.aegisT - dt);
+    if (aegisLvl > 0 && st.aegisT <= 0 && st.hull < st.hullMax * 0.6 && gs.t >= st.aegisCd) {
+      st.aegisT = AEGIS_DUR[aegisLvl] ?? 5;
+      st.aegisCd = gs.t + AEGIS_CD;
+      gs.fx.push({ type: 'bulle', pos: { ...st.pos }, size: st.radius + 14 });
+      if (st.team === gs.playerTeam) setAlert(gs, `BOUCLIER D'URGENCE ACTIVÉ (${Math.round(AEGIS_DUR[aegisLvl])} s)`, 3, '#7adfff');
+    }
+
+    // tourelle (armement niv. 1 : cadence et dégâts accrus)
     if (def.weaponDmg > 0 && st.fireCd <= 0) {
       const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, def.weaponRange);
       if (foe) {
-        st.fireCd = def.weaponCd;
+        st.fireCd = def.weaponCd * (armLvl >= 1 ? 0.55 : 1);
         const dir = norm(sub(foe.pos, st.pos));
-        makeProjectile(gs, st.team, 'canon', add(st.pos, scale(dir, st.radius + 2)), scale(dir, 280), def.weaponDmg + st.level * 2, def.weaponRange / 280 * 1.1, null);
+        makeProjectile(gs, st.team, 'canon', add(st.pos, scale(dir, st.radius + 2)), scale(dir, 280),
+          def.weaponDmg + st.level * 2 + (armLvl >= 1 ? 6 : 0), def.weaponRange / 280 * 1.1, null);
         gs.fx.push({ type: 'tir', pos: { ...st.pos }, color: 0xffd27a, wid: 'canon' });
+      }
+    }
+
+    // rayon à chauffe (armement niv. 2) : comme ceux du Colosse, sur l'ennemi le plus proche
+    if (armLvl >= 2) {
+      const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, STATION_BEAM_RANGE);
+      if (foe) {
+        const key = `st${st.id}:${foe.id}`;
+        const heat = Math.min(4, (rayHeat.get(key) ?? 0) + dt);
+        rayHeat.set(key, heat);
+        applyDamage(gs, foe, (6 + heat * 4) * dt, st.team);
+        gs.colossusBeams.push({ x1: st.pos.x, y1: st.pos.y, x2: foe.pos.x, y2: foe.pos.y, heat });
+      }
+    }
+
+    // salve de missiles (armement niv. 3) : 15 missiles répartis sur les assaillants
+    if (armLvl >= 3) {
+      st.salvoT = Math.max(0, st.salvoT - dt);
+      if (st.salvoT <= 0) {
+        const foes = gs.ships
+          .filter(s => s.alive && isEnemy(st.team, s.team) && s.cloakT <= 0 && dist(s.pos, st.pos) < 340)
+          .sort((x, y) => dist(x.pos, st.pos) - dist(y.pos, st.pos));
+        if (foes.length >= 2) {
+          st.salvoT = STATION_SALVO_CD;
+          for (let i = 0; i < STATION_SALVO_SIZE; i++) {
+            const t2 = foes[i % foes.length];
+            const from = add(st.pos, fromAngle((i / STATION_SALVO_SIZE) * Math.PI * 2, st.radius + 4));
+            makeProjectile(gs, st.team, 'missile', from, scale(norm(sub(t2.pos, from)), 160), 24, 3.2, t2.id);
+            gs.fx.push({ type: 'tir', pos: { ...from }, color: 0xff7ad8, wid: 'missile' });
+          }
+          if (st.team === gs.playerTeam) addLog(gs, 'Salve défensive de la station : 15 missiles.', '#ff7ad8');
+        }
       }
     }
 
@@ -1242,7 +1326,7 @@ function updateStructures(gs: GameState, dt: number) {
     // revenus
     const team = gs.teams[st.team];
     if (!team || !team.alive) continue;
-    const mult = team.isAI ? DIFF_MULT[gs.cfg.difficulty] : 1;
+    const mult = team.isAI ? aiIncomeMult(gs) : 1;
     st.incomeT += dt;
     if (st.stype === 'station' && st.incomeT >= PASSIVE_INCOME_PERIOD) {
       st.incomeT = 0;
@@ -1298,7 +1382,7 @@ function updatePlanets(gs: GameState, dt: number) {
     p.incomeT += dt;
     if (p.incomeT >= PLANET_INCOME_PERIOD) {
       p.incomeT = 0;
-      const mult = team.isAI ? DIFF_MULT[gs.cfg.difficulty] : 1;
+      const mult = team.isAI ? aiIncomeMult(gs) : 1;
       team.credits += Math.round(PLANET_INCOME * mult);
       if (p.owner === gs.playerTeam) addLog(gs, `${p.name} : +${PLANET_INCOME} crédits.`, '#6dff8a');
     }
@@ -1464,6 +1548,16 @@ function cleanup(gs: GameState) {
   });
 }
 
+/** Multiplicateur de revenus IA : en facile, il remonte vers 1 au fil de la partie
+ *  (les débuts restent tranquilles, mais il finit par se passer des choses). */
+export function aiIncomeMult(gs: GameState): number {
+  let m = DIFF_MULT[gs.cfg.difficulty];
+  if (gs.cfg.difficulty === 'facile') {
+    m = Math.min(1, m + Math.max(0, gs.t / 60 - 8) * 0.023);
+  }
+  return m;
+}
+
 export function teamScore(gs: GameState, teamId: number): number {
   const team = gs.teams[teamId];
   if (!team) return 0;
@@ -1491,13 +1585,8 @@ function checkVictory(gs: GameState) {
     gs.overReason = alive[0] === gs.playerTeam ? 'Toutes les stations ennemies sont tombées.' : '';
     return;
   }
-  // tous les survivants sont alliés : victoire partagée
-  if (alive.length >= 2 && alive.every(x => alive.every(y => areAllied(gs, x, y)))) {
-    gs.status = 'over';
-    gs.winner = alive.includes(gs.playerTeam) ? gs.playerTeam : alive[0];
-    gs.overReason = `Victoire d'alliance : les survivants sont tous alliés.`;
-    return;
-  }
+  // (pas de victoire d'alliance : un allié, ça se perd — le pacte finira par expirer
+  //  et le dernier survivant IA se prépare à la guerre pendant ce temps)
   // limite de temps au score : seulement autour d'un trou noir (pas de supernova possible)
   if (gs.map.blackHole && gs.t >= TIME_LIMIT_T) {
     let best = -1, bestScore = -1;
@@ -1626,6 +1715,28 @@ export function tryUpgradeStation(gs: GameState, teamId: number): string | null 
   st.hullMax += 300; st.hull += 300;
   st.shieldMax += 100;
   addLog(gs, `Station ${team.name} améliorée : niveau ${st.level}.`, team.cssColor);
+  return null;
+}
+
+/** Achète un niveau d'amélioration défensive de la station (même mécanique que celles du vaisseau). */
+export function tryBuyStationUpgrade(gs: GameState, teamId: number, upgradeId: string): string | null {
+  const team = gs.teams[teamId];
+  if (!team) return 'Équipe invalide';
+  const def = STATION_UPGRADES.find(u => u.id === upgradeId);
+  if (!def) return 'Amélioration inconnue';
+  const st = structById(gs, team.stationId);
+  if (!st) return 'Station détruite';
+  const lvl = team.upgrades[upgradeId] ?? 0;
+  if (lvl >= def.prix.length) return 'Niveau maximum atteint';
+  const price = def.prix[lvl];
+  if (team.credits < price) return 'Crédits insuffisants';
+  team.credits -= price;
+  team.upgrades[upgradeId] = lvl + 1;
+  if (upgradeId === 'st_blindage') {
+    st.shieldMax += 250;
+    st.shield = Math.min(st.shieldMax, st.shield + 250);
+  }
+  addLog(gs, `${def.nom} : niveau ${lvl + 1}.`, team.cssColor);
   return null;
 }
 
@@ -1921,7 +2032,14 @@ function updateFleetMissions(gs: GameState, dt: number) {
     if (kind === 'mine_auto') {
       const miners = ships.filter(x => SHIP_CLASSES[x.cls].canMine);
       const guards = ships.filter(x => !SHIP_CLASSES[x.cls].canMine);
+      const takenWrecks = new Set(miners.filter(m2 => m2.order.kind === 'salvage').map(m2 => m2.order.targetId ?? -1));
       for (const m of miners) {
+        // mission secondaire : récolter les épaves du secteur avant qu'elles ne se dispersent
+        if (m.order.kind === 'salvage' && gs.wrecks.some(w => w.id === m.order.targetId && w.alive)) continue;
+        if (cargoTotal(m) < m.cargoMax - 0.5) {
+          const w2 = gs.wrecks.find(w => w.alive && !takenWrecks.has(w.id) && dist(w.pos, home) < 780);
+          if (w2) { m.order = { kind: 'salvage', targetId: w2.id }; takenWrecks.add(w2.id); continue; }
+        }
         const valid = m.order.kind === 'mine' && (
           cargoTotal(m) >= m.cargoMax - 0.5 ||
           gs.roids.some(r => r.id === m.order.targetId && r.alive && r.amount > 0) ||
@@ -2429,6 +2547,7 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
   if (gs.diploOffers.some(o => o.type === 'alliance'
     && ((o.from === from && o.to === to) || (o.from === to && o.to === from)))) return 'Offre déjà en attente';
   if (to === gs.playerTeam && !gs.teams[to].isAI) {
+    if (offerIsMuted(gs, from, to, 'alliance')) return null;
     gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'alliance', expiresT: gs.t + 25 });
     addLog(gs, `${gs.teams[from].name} vous propose une alliance.`, gs.teams[from].cssColor);
     return null;
@@ -2444,6 +2563,7 @@ export function requestFocus(gs: GameState, from: number, to: number, target: nu
   if (!gs.teams[target]?.alive || areAllied(gs, to, target) || areAllied(gs, from, target)) return 'Cible invalide';
   if (to === gs.playerTeam && !gs.teams[to].isAI) {
     if (gs.diploOffers.some(o => o.type === 'target' && o.from === from && o.to === to)) return null;
+    if (offerIsMuted(gs, from, to, 'target')) return null;
     gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'target', target, expiresT: gs.t + 25 });
     addLog(gs, `${gs.teams[from].name} vous demande de cibler ${gs.teams[target].name}.`, gs.teams[from].cssColor);
     return null;
@@ -2465,7 +2585,8 @@ export function requestDefend(gs: GameState, from: number, to: number): string |
   const fromStation = structById(gs, gs.teams[from].stationId);
   if (!fromStation) return 'Votre station est détruite';
   if (to === gs.playerTeam && !gs.teams[to].isAI) {
-    if (!gs.diploOffers.some(o => o.type === 'defend' && o.from === from && o.to === to)) {
+    if (!gs.diploOffers.some(o => o.type === 'defend' && o.from === from && o.to === to)
+      && !offerIsMuted(gs, from, to, 'defend')) {
       gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'defend', expiresT: gs.t + 30 });
       addLog(gs, `${gs.teams[from].name} demande votre aide : sa base est attaquée !`, gs.teams[from].cssColor);
     }
@@ -2484,10 +2605,21 @@ export function requestDefend(gs: GameState, from: number, to: number): string |
   return null;
 }
 
+// Après « Accepter » ou « Refuser », l'expéditeur n'a pas le droit de re-proposer
+// la même chose dans la foulée : le message ne réapparaît pas en boucle.
+const OFFER_MUTE_DUR: Record<string, number> = { alliance: 180, defend: 90, target: 120 };
+function muteOffer(gs: GameState, o: { from: number; to: number; type: string }) {
+  gs.offerMuted[`${o.to}:${o.from}:${o.type}`] = gs.t + (OFFER_MUTE_DUR[o.type] ?? 90);
+}
+export function offerIsMuted(gs: GameState, from: number, to: number, type: string): boolean {
+  return (gs.offerMuted?.[`${to}:${from}:${type}`] ?? 0) > gs.t;
+}
+
 export function acceptOffer(gs: GameState, offerId: number) {
   const o = gs.diploOffers.find(x => x.id === offerId);
   if (!o) return;
   gs.diploOffers = gs.diploOffers.filter(x => x.id !== offerId);
+  muteOffer(gs, o);
   if (o.type === 'alliance') {
     if (areAllied(gs, o.from, o.to)) {
       const key = allyKey(o.from, o.to);
@@ -2510,5 +2642,6 @@ export function refuseOffer(gs: GameState, offerId: number) {
   const o = gs.diploOffers.find(x => x.id === offerId);
   if (!o) return;
   gs.diploOffers = gs.diploOffers.filter(x => x.id !== offerId);
+  muteOffer(gs, o);
   addLog(gs, `Vous déclinez l'offre de ${gs.teams[o.from].name}.`, '#8fa8c8');
 }

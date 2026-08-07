@@ -57,7 +57,7 @@ export function newGame(cfg: MatchConfig): GameState {
     neutronT: map.neutronPeriod > 0 ? map.neutronPeriod : -1,
     pirateT: 100,
     supernovaWave: -1,
-    alliances: new Set(), allianceSince: {}, diploOffers: [], focusTargets: {},
+    alliances: new Set(), allianceSince: {}, diploOffers: [], focusTargets: {}, offerMuted: {},
     storms: [], stormT: 480 + rng() * 120,
     meteors: [], meteorT: 480,
     colossusBeams: [],
