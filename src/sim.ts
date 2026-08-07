@@ -1870,12 +1870,53 @@ export function takeControlNearest(gs: GameState, teamId = gs.playerTeam): strin
 function updateFleetMissions(gs: GameState, dt: number) {
   for (const f of gs.fleets) {
     const kind = f.mission.kind;
-    if (!['mine_auto', 'patrol_in', 'patrol_border', 'patrol_out', 'protect', 'trade_auto', 'patrol_civil', 'plan'].includes(kind)) continue;
+    if (!['attack', 'mine_auto', 'patrol_in', 'patrol_border', 'patrol_out', 'protect', 'trade_auto', 'patrol_civil', 'plan'].includes(kind)) continue;
     const ships = fleetShips(gs, f);
     if (ships.length === 0) continue;
     const team = gs.teams[f.team];
     const station = structById(gs, team?.stationId ?? -1);
     const home = station ? station.pos : v2();
+
+    // ---- siège coordonné : contre une structure/planète, la flotte se répartit ----
+    if (kind === 'attack') {
+      const tid = f.mission.targetId ?? -1;
+      const core = structById(gs, tid) ?? planetById(gs, tid);
+      if (!core) continue;   // cible vaisseau : comportement standard
+      f.patrolAngle += dt;
+      if (f.patrolAngle < 3) continue;   // réévalue la répartition toutes les ~3 s
+      f.patrolAngle = 0;
+      const R = 460;
+      const outposts = gs.structures.filter(st2 => st2.alive && st2.id !== core.id
+        && isEnemy(f.team, st2.team) && STRUCTS[st2.stype].weaponDmg > 0 && dist(st2.pos, core.pos) < R);
+      const bombers = ships.filter(sh => sh.cls === 'bombardier');
+      const bomberIds = new Set(bombers.map(b2 => b2.id));
+      // menaces : les ennemis qui tirent sur nos unités vulnérables passent en priorité
+      const vulnerable = new Set([...bomberIds, ...ships.filter(sh => SHIP_CLASSES[sh.cls].civil).map(sh => sh.id)]);
+      const foes = gs.ships
+        .filter(sh => sh.alive && isEnemy(f.team, sh.team) && SHIP_CLASSES[sh.cls].power > 3 && dist(sh.pos, core.pos) < R)
+        .sort((x, y) => {
+          const px = x.order.kind === 'attack' && vulnerable.has(x.order.targetId ?? -1) ? 0 : 1;
+          const py = y.order.kind === 'attack' && vulnerable.has(y.order.targetId ?? -1) ? 0 : 1;
+          return px - py || dist(x.pos, core.pos) - dist(y.pos, core.pos);
+        });
+      // bombardiers : 2/3 sur le cœur, 1/3 sur les avant-postes voisins
+      bombers.forEach((b2, i) => {
+        const onCore = outposts.length === 0 || i < Math.max(1, Math.ceil(bombers.length * 0.66));
+        const want = onCore ? core.id : outposts[i % outposts.length].id;
+        if (b2.order.kind !== 'attack' || b2.order.targetId !== want) b2.order = { kind: 'attack', targetId: want };
+      });
+      // chasseurs & co : d'abord les vaisseaux ennemis (menaces en tête), sinon
+      // les avant-postes, sinon le cœur — chacun sa cible, dans le rayon d'action
+      const fighters = ships.filter(sh => !bomberIds.has(sh.id) && SHIP_CLASSES[sh.cls].power > 3);
+      fighters.forEach((c2, i) => {
+        let want: number;
+        if (foes.length > 0) want = foes[i % foes.length].id;
+        else if (outposts.length > 0) want = outposts[i % outposts.length].id;
+        else want = core.id;
+        if (c2.order.kind !== 'attack' || c2.order.targetId !== want) c2.order = { kind: 'attack', targetId: want };
+      });
+      continue;
+    }
 
     if (kind === 'mine_auto') {
       const miners = ships.filter(x => SHIP_CLASSES[x.cls].canMine);

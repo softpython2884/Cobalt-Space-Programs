@@ -304,3 +304,32 @@ h2 { letter-spacing: 4px; margin-bottom: 18px; }
 #lobby-code { font-size: 30px; letter-spacing: 10px; color: var(--accent); font-family: Consolas; margin-bottom: 14px; }
 #lobby-players { text-align: left; margin-bottom: 18px; }
 #lobby-players .lp-row { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 5px 0; }
+
+
+/* ---------- Écrans du menu ---------- */
+.mscreen { animation: screenIn 0.18s ease-out; }
+@keyframes screenIn { from { opacity: 0; transform: translateY(8px); } }
+#screen-home .big-btn, #screen-salons .big-btn { width: 320px; margin-bottom: 10px; }
+
+/* ---------- Menus circulaires ---------- */
+#radial {
+  position: absolute; z-index: 45; width: 0; height: 0; pointer-events: none;
+}
+#radial.closing .radial-item { transform: scale(0.5); opacity: 0; }
+.radial-item {
+  position: absolute; pointer-events: auto; cursor: pointer;
+  width: 64px; height: 56px; margin-left: -32px; margin-top: -28px;
+  background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: var(--txt); font-size: 9px; text-align: center; line-height: 1.15;
+  transition: transform 0.16s ease-out, opacity 0.16s ease-out, border-color 0.1s;
+  animation: radialIn 0.16s ease-out backwards;
+}
+.radial-item .ic { width: 16px; height: 16px; margin: 0 0 3px 0; }
+.radial-item:hover { border-color: var(--accent); color: var(--accent); transform: scale(1.12); z-index: 46; }
+.radial-item.disabled { opacity: 0.35; filter: grayscale(1); cursor: not-allowed; }
+.radial-item.rcenter {
+  width: 46px; height: 46px; margin-left: -23px; margin-top: -23px;
+  border-radius: 50%; background: #16406a; border-color: var(--accent); font-size: 8px;
+}
+@keyframes radialIn { from { transform: scale(0.4); opacity: 0; } }

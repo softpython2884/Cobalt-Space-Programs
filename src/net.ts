@@ -7,12 +7,14 @@ export interface LobbyInfo {
   players: { name: string; team: number; host: boolean }[];
   isHost: boolean;
   myTeam: number;
+  countdown: number | null;
 }
 
 export class Net {
   private ws: WebSocket | null = null;
   state: 'off' | 'connecting' | 'lobby' | 'playing' = 'off';
   myTeam = 0;
+  names: Record<number, string> = {};
   lobby: LobbyInfo | null = null;
   private snap: GameState | null = null;
   private lastInputT = 0;
@@ -52,12 +54,13 @@ export class Net {
       case 'lobby':
         this.state = 'lobby';
         this.myTeam = m.you;
-        this.lobby = { code: m.code, players: m.players, isHost: m.host, myTeam: m.you };
+        this.lobby = { code: m.code, players: m.players, isHost: m.host, myTeam: m.you, countdown: m.cd ?? null };
         this.onLobby(this.lobby);
         break;
       case 'start':
         this.state = 'playing';
         this.myTeam = m.you;
+        this.names = m.names ?? {};
         this.onStart();
         break;
       case 'snap': {
@@ -80,7 +83,7 @@ export class Net {
   }
 
   quick(name: string, cfg: MatchConfig) { this.send({ t: 'quick', name, cfg }); }
-  create(name: string, cfg: MatchConfig) { this.send({ t: 'create', name, cfg }); }
+  create(name: string, cfg: MatchConfig, isPublic = false) { this.send({ t: 'create', name, cfg, public: isPublic }); }
   join(code: string, name: string) { this.send({ t: 'join', code, name }); }
   start() { this.send({ t: 'start' }); }
   leave() { this.ws?.close(); this.state = 'off'; this.snap = null; }

@@ -513,8 +513,12 @@ function handleInput(dt: number) {
     }
   }
 
-  // ---------- Clic droit : plan (positions/objectif) ou ordres contextuels ----------
+  // ---------- Clic droit : radial (double/Alt), plan, ou ordres contextuels ----------
   for (const c of input.rightClicks) {
+    if ((c.dbl || input.down('AltLeft')) && planMode === 'off') {
+      openSelectionRadial(c.x, c.y);
+      continue;
+    }
     if (planMode !== 'off') {
       const pos = renderer.worldFromScreen(c.x, c.y);
       if (planMode === 'objective') {
@@ -647,6 +651,131 @@ function activateGadgetSmart(gid: GadgetId, aim: V2) {
   }
   const err = cmd('gadget', { gid, targetId });
   if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
+}
+
+// ================================================================
+//  MENUS CIRCULAIRES — sélection, station à l'approche, corps au survol
+// ================================================================
+let hoverPlanetId = -1;
+
+function openSelectionRadial(sx: number, sy: number) {
+  if (!gs || !renderer) return;
+  const sel = gs.selection.filter(id => shipById(gs!, id));
+  const worldPos = renderer.worldFromScreen(sx, sy);
+  const items: Parameters<typeof hud.showRadial>[3] = [];
+  if (sel.length >= 2) {
+    items.push({ ic: 'plus', label: 'Créer flotte', cb: () => hud.onFleetCreate() });
+  }
+  items.push({
+    ic: 'pick', label: 'Missions', sub: [
+      { ic: 'pick', label: 'Minage auto', cb: () => hud.onFleetMission('mine_auto') },
+      { ic: 'route', label: 'Commerce', cb: () => hud.onFleetMission('trade_auto') },
+      { ic: 'star', label: 'Protéger amiral', cb: () => hud.onFleetMission('protect') },
+      { ic: 'heart', label: 'Patr. civile', cb: () => hud.onFleetMission('patrol_civil') },
+    ],
+  });
+  items.push({
+    ic: 'shield', label: 'Patrouilles', sub: [
+      { ic: 'shield', label: 'Intérieure', cb: () => hud.onFleetMission('patrol_in') },
+      { ic: 'shield', label: 'Bordure', cb: () => hud.onFleetMission('patrol_border') },
+      { ic: 'shield', label: 'Extérieure', cb: () => hud.onFleetMission('patrol_out') },
+    ],
+  });
+  items.push({
+    ic: 'map', label: 'Formation', sub: [
+      { label: 'Ligne', cb: () => hud.onFormation('ligne') },
+      { label: 'Coin', cb: () => hud.onFormation('coin') },
+      { label: 'Arc', cb: () => hud.onFormation('cercle') },
+      { label: 'Colonne', cb: () => hud.onFormation('colonne') },
+    ],
+  });
+  items.push({
+    ic: 'crosshair', label: 'Doctrine', sub: [
+      { ic: 'crosshair', label: 'À vue', cb: () => hud.onStance('feu') },
+      { ic: 'shield', label: 'Défense', cb: () => hud.onStance('defense') },
+      { ic: 'ban', label: 'Ne pas tirer', cb: () => hud.onStance('paix') },
+    ],
+  });
+  items.push({ ic: 'arrow', label: 'Venir ici', cb: () => cmd('order', { ids: sel.filter(id => id !== gs!.playerShipId), order: { kind: 'move', pos: worldPos } }) });
+  items.push({ ic: 'home', label: 'Retour station', cb: () => cmd('order', { ids: sel.filter(id => id !== gs!.playerShipId), order: { kind: 'dock' } }) });
+  items.push({ ic: 'x', label: 'Dissoudre', cb: () => hud.onFleetDisband() });
+  hud.showRadial('selection', sx, sy, items, `${sel.length || 0} vsx`);
+}
+
+/** Radiaux automatiques : station à l'approche du vaisseau, corps au survol du curseur. */
+function updateRadials(aim: V2) {
+  if (!gs || !renderer) return;
+  const ship = playerShip(gs);
+  const kind = hud.radialKind;
+  if (kind === 'selection') return;   // fermé par clic / action
+
+  // --- station : menu qui apparaît quand on s'amarre ---
+  const st = structById(gs, gs.teams[gs.playerTeam].stationId);
+  if (ship && st) {
+    const d = dist(ship.pos, st.pos);
+    if (d < 95 && kind === '') {
+      const p2 = renderer.screenFromWorld(st.pos);
+      hud.showRadial('station', p2.x, p2.y, [
+        { ic: 'box', label: 'Boutique', cb: () => hud.toggleShop(gs!) },
+        { ic: 'home', label: 'Construire', cb: () => hud.toggleBuild(gs!) },
+        { ic: 'link', label: 'Diplomatie', cb: () => hud.toggleDiplo(gs!) },
+        { ic: 'plus', label: 'Améliorer', cb: () => { const e2 = cmd('upgradeStation', {}); if (e2) { sfx.error(); hud.flashHint(e2); } else sfx.buy(); } },
+        { ic: 'orbit', label: 'Garde', cb: () => { const e2 = cmd('guards', { targetId: st.id }); if (e2) { sfx.error(); hud.flashHint(e2); } else sfx.buy(); } },
+      ], 'STATION');
+    } else if (kind === 'station') {
+      if (d > 130) hud.hideRadial();
+      else { const p2 = renderer.screenFromWorld(st.pos); hud.moveRadial(p2.x, p2.y); }
+    }
+  } else if (kind === 'station') {
+    hud.hideRadial();
+  }
+
+  // --- corps céleste : mini-menu au survol du curseur ---
+  if (kind === '' || kind.startsWith('hover')) {
+    let target: typeof gs.planets[number] | null = null;
+    for (const pl of gs.planets) {
+      if (!pl.alive) continue;
+      const d = dist(aim, pl.pos);
+      if (kind === `hover:${pl.id}` ? d < pl.radius + 70 : d < pl.radius + 24) { target = pl; break; }
+    }
+    if (!target && kind.startsWith('hover')) { hud.hideRadial(); hoverPlanetId = -1; return; }
+    if (target && kind !== `hover:${target.id}`) {
+      hoverPlanetId = target.id;
+      const pl = target;
+      const items: Parameters<typeof hud.showRadial>[3] = [];
+      if (pl.owner === gs.playerTeam) {
+        items.push({ ic: 'plus', label: 'Renforcer', disabled: pl.colonyHpMax >= 1200, cb: () => { const e2 = cmd('planetUp', { planetId: pl.id }); if (e2) { sfx.error(); hud.flashHint(e2); } } });
+        items.push({ ic: 'orbit', label: 'Garde', cb: () => { const e2 = cmd('guards', { targetId: pl.id }); if (e2) { sfx.error(); hud.flashHint(e2); } } });
+      } else if (pl.owner < 0) {
+        // colonisation : appelle un transporteur disponible
+        const colon = gs.ships.find(sh => sh.alive && sh.team === gs!.playerTeam && SHIP_CLASSES[sh.cls].canColonize && sh.order.kind !== 'colonize');
+        items.push({
+          ic: 'flag', label: colon ? 'Coloniser' : 'Aucun transporteur', disabled: !colon,
+          cb: () => { if (colon) cmd('order', { ids: [colon.id], order: { kind: 'colonize', targetId: pl.id } }); },
+        });
+      } else if (!areAllied(gs, gs.playerTeam, pl.owner)) {
+        // attaque : les vaisseaux qui vous suivent + flottes de protection
+        const followers = gs.ships.filter(sh => sh.alive && sh.team === gs!.playerTeam
+          && sh.order.kind === 'escort' && sh.order.targetId === gs!.playerShipId).map(sh => sh.id);
+        for (const f of gs.fleets) {
+          if (f.team === gs.playerTeam && f.mission.kind === 'protect') {
+            for (const sh of fleetShips(gs, f)) followers.push(sh.id);
+          }
+        }
+        items.push({
+          ic: 'crosshair', label: followers.length ? `Attaquer (${followers.length})` : 'Aucune escorte', disabled: !followers.length,
+          cb: () => { if (followers.length) cmd('order', { ids: followers, order: { kind: 'attack', targetId: pl.id } }); },
+        });
+      }
+      if (items.length > 0) {
+        const p2 = renderer.screenFromWorld(pl.pos);
+        hud.showRadial(`hover:${pl.id}`, p2.x, p2.y, items, pl.name.toUpperCase().slice(0, 8));
+      }
+    } else if (target && kind === `hover:${target.id}`) {
+      const p2 = renderer.screenFromWorld(target.pos);
+      hud.moveRadial(p2.x, p2.y);
+    }
+  }
 }
 
 // ---------- Menu d'ordres (clic droit) ----------
@@ -965,6 +1094,8 @@ function frame(now: number) {
   }
 
   const aim = renderer.worldFromScreen(input.mouseX, input.mouseY);
+  if (gs.status === 'playing' && !paused && introT <= 0) updateRadials(aim);
+  else if (hud.radialKind) hud.hideRadial(true);
   renderer.update(gs, elapsed, visibleSet, aim);
   hud.update(gs, {
     tactical: renderer.isTactical(),
@@ -992,12 +1123,25 @@ function mpFooter(msg: string) {
 
 function applySnap(snap: GameState) {
   const prevSel = gs?.selection ?? [];
+  // lissage : on ne téléporte pas les vaisseaux, on converge vers l'état serveur
+  const oldPos = new Map<number, { x: number; y: number }>();
+  if (gs) for (const sh of gs.ships) oldPos.set(sh.id, { x: sh.pos.x, y: sh.pos.y });
   gs = snap;
+  (gs as unknown as { mpNames?: Record<number, string> }).mpNames = net?.names;
   hud.bind(gs);
   setAllianceCheck((a, b) => areAlliedFn(gs!, a, b));
   gs.selection = prevSel.filter(id => gs!.ships.some(sh => sh.id === id));
   const flag = gs.ships.find(sh => sh.alive && sh.isFlagship && sh.team === gs!.playerTeam);
   gs.playerShipId = flag?.id ?? -1;
+  // correction douce des positions (anti-saccades) : notre vaisseau converge
+  // lentement, les autres un peu plus vite — l'estime fait le reste
+  for (const sh of gs.ships) {
+    const op = oldPos.get(sh.id);
+    if (!op) continue;
+    const alpha = sh.id === gs.playerShipId ? 0.22 : 0.5;
+    sh.pos.x = op.x + (sh.pos.x - op.x) * alpha;
+    sh.pos.y = op.y + (sh.pos.y - op.y) * alpha;
+  }
   // conserve la progression de verrouillage locale (visuel)
   if (flag && input.down('KeyQ')) flag.lockT = mpLockT;
   if (mpFirstSnap && renderer && flag) {
@@ -1067,18 +1211,29 @@ function startNetGame() {
   sfx.hyper();
 }
 
-hud.onMpQuick = async (name, addr) => {
+/** Le serveur multijoueur vit sur la même machine que le site. */
+function autoAddr(): string {
+  if (location.protocol === 'https:') return `wss://${location.host}/ws`;
+  return `ws://${location.hostname}:17771`;
+}
+
+hud.onMpQuick = async name => {
   mpFooter('Connexion…');
-  if (await mpConnect(addr)) { net!.quick(name, hud.getCfg()); mpFooter('Connecté — salon public.'); }
+  // partie rapide : réglages standards tirés au sort côté client
+  const cfg: MatchConfig = {
+    seed: Math.floor(Math.random() * 1e9), playerColorIdx: 0, aiCount: 3,
+    personaChoice: 'aleatoire', starChoice: 'aleatoire', difficulty: 'normal',
+  };
+  if (await mpConnect(autoAddr())) { net!.quick(name, cfg); mpFooter('Recherche de joueurs…'); }
 };
-hud.onMpCreate = async (name, addr) => {
+hud.onMpCreate = async (name, isPublic) => {
   mpFooter('Connexion…');
-  if (await mpConnect(addr)) { net!.create(name, hud.getCfg()); mpFooter('Salon créé.'); }
+  if (await mpConnect(autoAddr())) { net!.create(name, hud.getCfg(), isPublic); mpFooter('Salon créé.'); }
 };
-hud.onMpJoin = async (name, addr, code) => {
+hud.onMpJoin = async (name, code) => {
   if (!code) { mpFooter('Entrez le code du salon.'); return; }
   mpFooter('Connexion…');
-  if (await mpConnect(addr)) { net!.join(code, name); }
+  if (await mpConnect(autoAddr())) { net!.join(code, name); }
 };
 hud.onMpStart = () => net?.start();
 hud.onMpLeave = () => leaveMp();

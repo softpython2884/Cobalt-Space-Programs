@@ -35,6 +35,8 @@ interface Player {
 interface Room {
   code: string;
   isPublic: boolean;
+  quick: boolean;            // partie rapide : départ automatique après décompte
+  autoStartAt: number;       // horodatage du départ auto (0 = désactivé)
   players: Player[];
   hostCfg: MatchConfig;
   gs: GameState | null;
@@ -62,8 +64,9 @@ const emptyInput = (): InputMsg => ({ thrust: { x: 0, y: 0 }, aim: { x: 0, y: 0 
 
 function broadcastLobby(room: Room) {
   const players = room.players.map((p, i) => ({ name: p.name, team: p.team, host: i === 0 }));
+  const cd = room.autoStartAt > 0 ? Math.max(0, Math.ceil((room.autoStartAt - Date.now()) / 1000)) : null;
   room.players.forEach((p, i) => {
-    send(p.ws, { t: 'lobby', code: room.code, players, you: p.team, host: i === 0 });
+    send(p.ws, { t: 'lobby', code: room.code, players, you: p.team, host: i === 0 && !room.quick, cd });
   });
 }
 
@@ -75,6 +78,11 @@ function joinRoom(room: Room, ws: WebSocket, name: string) {
   while (taken.has(team)) team++;
   room.players.push({ ws, name: name.slice(0, 16) || 'Amiral', team, input: emptyInput(), prevInput: emptyInput() });
   (ws as any).room = room;
+  // partie rapide : décompte lancé dès le premier joueur, départ immédiat à 4
+  if (room.quick) {
+    if (room.autoStartAt === 0) room.autoStartAt = Date.now() + 25000;
+    if (room.players.length >= 4) { startRoom(room); return; }
+  }
   broadcastLobby(room);
 }
 
@@ -90,7 +98,9 @@ function startRoom(room: Room) {
   room.gs = newGame(cfg);
   room.fxBuf = [];
   room.snapAcc = 0;
-  room.players.forEach(p => send(p.ws, { t: 'start', you: p.team }));
+  const names: Record<number, string> = {};
+  for (const p of room.players) names[p.team] = p.name;
+  room.players.forEach(p => send(p.ws, { t: 'start', you: p.team, names }));
 
   let last = Date.now();
   let acc = 0;
@@ -237,14 +247,14 @@ wss.on('connection', ws => {
       case 'quick': {
         let target = [...rooms.values()].find(r => r.isPublic && !r.gs && r.players.length < 4);
         if (!target) {
-          target = { code: newCode(), isPublic: true, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+          target = { code: newCode(), isPublic: true, quick: true, autoStartAt: 0, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
           rooms.set(target.code, target);
         }
         joinRoom(target, ws, m.name);
         break;
       }
       case 'create': {
-        const r: Room = { code: newCode(), isPublic: false, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+        const r: Room = { code: newCode(), isPublic: !!m.public, quick: false, autoStartAt: 0, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
         rooms.set(r.code, r);
         joinRoom(r, ws, m.name);
         break;
@@ -304,6 +314,15 @@ wss.on('connection', ws => {
     }
   });
 });
+
+// décompte des parties rapides : rafraîchit le lobby et lance à zéro
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (room.gs || !room.quick || room.players.length === 0) continue;
+    if (room.autoStartAt > 0 && Date.now() >= room.autoStartAt) startRoom(room);
+    else broadcastLobby(room);
+  }
+}, 1000);
 
 server.listen(PORT, () => {
   console.log(`COBALT SECTOR — serveur multijoueur sur le port ${PORT}`);

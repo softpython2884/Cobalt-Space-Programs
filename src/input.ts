@@ -24,6 +24,10 @@ export class Input {
   private lastDownT = 0;
   private lastDownX = 0;
   private lastDownY = 0;
+  private lastRightT = 0;
+  private lastRightX = 0;
+  private lastRightY = 0;
+  private rightDbl = false;
 
   constructor(private el: HTMLElement) {
     window.addEventListener('keydown', e => {
@@ -39,7 +43,7 @@ export class Input {
     // les événements souris démarrés sur l'interface ne doivent pas atteindre le jeu
     const onUI = (e: Event): boolean =>
       !!(e.target as Element | null)?.closest?.(
-        '.side-panel, #tacticalbar, #ctxmenu, .overlay, #bottomcenter, #help-box');
+        '.side-panel, #tacticalbar, #ctxmenu, .overlay, #bottomcenter, #help-box, #radial');
 
     el.addEventListener('mousemove', e => {
       this.mouseX = e.clientX; this.mouseY = e.clientY;
@@ -61,7 +65,14 @@ export class Input {
         this.dragEnd = null;
       }
       if (e.button === 1) { this.middleDown = true; e.preventDefault(); }
-      if (e.button === 2) this.rightDown = true;
+      if (e.button === 2) {
+        this.rightDown = true;
+        const now2 = performance.now();
+        this.rightDbl = (now2 - this.lastRightT < 380)
+          && Math.hypot(e.clientX - this.lastRightX, e.clientY - this.lastRightY) < 36;
+        this.lastRightT = now2;
+        this.lastRightX = e.clientX; this.lastRightY = e.clientY;
+      }
     });
     // mouseup sur window : relâcher hors de la fenêtre ne doit pas bloquer leftDown/drag
     window.addEventListener('mouseup', e => {
@@ -85,7 +96,7 @@ export class Input {
         this.dblHold = false;
       }
       if (e.button === 1) { this.middleDown = false; if (!ui) this.middleClicks.push(ev); }
-      if (e.button === 2) { this.rightDown = false; if (!ui) this.rightClicks.push(ev); }
+      if (e.button === 2) { this.rightDown = false; if (!ui) this.rightClicks.push({ ...ev, dbl: this.rightDbl }); }
     });
     el.addEventListener('contextmenu', e => e.preventDefault());
     el.addEventListener('wheel', e => {

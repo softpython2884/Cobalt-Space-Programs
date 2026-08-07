@@ -75,7 +75,12 @@ export class HUD {
   private shopTab = 'vaisseaux';
   private gs: GameState | null = null;
   private helpFrom: 'menu' | 'pause' = 'menu';
+  private configMode: 'solo' | 'salon-pub' | 'salon-priv' = 'solo';
+  showMenuScreen: (id: string) => void = () => {};
+  private mpName(): string { return ($('mp-name') as HTMLInputElement).value.trim() || 'Amiral'; }
   private fleetListSig = '';
+  private shopSig = '';
+  private buildSig = '';
   private diploSig = '';
   private offersSig = '';
   private curAlert = '';
@@ -89,9 +94,9 @@ export class HUD {
   onPlanFilter: (f: string) => void = () => {};
   onPlanClear: () => void = () => {};
   onDiploDefend: (team: number) => void = () => {};
-  onMpQuick: (name: string, addr: string) => void = () => {};
-  onMpCreate: (name: string, addr: string) => void = () => {};
-  onMpJoin: (name: string, addr: string, code: string) => void = () => {};
+  onMpQuick: (name: string) => void = () => {};
+  onMpCreate: (name: string, isPublic: boolean) => void = () => {};
+  onMpJoin: (name: string, code: string) => void = () => {};
   onMpStart: () => void = () => {};
   onMpLeave: () => void = () => {};
   onDiploPropose: (team: number) => void = () => {};
@@ -140,10 +145,24 @@ export class HUD {
       this.cfg.difficulty = (['facile', 'normal', 'difficile'] as const)[i];
     });
 
+    const showScreen = (id: string) => {
+      for (const sc of ['screen-home', 'screen-config', 'screen-salons']) {
+        $(sc).classList.toggle('hidden', sc !== id);
+      }
+    };
+    this.showMenuScreen = showScreen;
+    $('btn-solo').onclick = () => { sfx.ui(); this.configMode = 'solo'; $('btn-start').textContent = 'LANCER LA PARTIE'; showScreen('screen-config'); };
+    $('btn-quick').onclick = () => { sfx.ui(); this.onMpQuick(this.mpName()); };
+    $('btn-salons').onclick = () => { sfx.ui(); showScreen('screen-salons'); };
+    $('btn-back-config').onclick = () => { sfx.ui(); showScreen('screen-home'); };
+    $('btn-back-salons').onclick = () => { sfx.ui(); showScreen('screen-home'); };
+    $('btn-salon-pub').onclick = () => { sfx.ui(); this.configMode = 'salon-pub'; $('btn-start').textContent = 'CRÉER LE SALON PUBLIC'; showScreen('screen-config'); };
+    $('btn-salon-priv').onclick = () => { sfx.ui(); this.configMode = 'salon-priv'; $('btn-start').textContent = 'CRÉER LE SALON PRIVÉ'; showScreen('screen-config'); };
     $('btn-start').onclick = () => {
       this.cfg.seed = Math.floor(Math.random() * 1e9);
       sfx.buy();
-      this.onStart({ ...this.cfg });
+      if (this.configMode === 'solo') this.onStart({ ...this.cfg });
+      else this.onMpCreate(this.mpName(), this.configMode === 'salon-pub');
     };
     $('btn-help').onclick = () => { this.helpFrom = 'menu'; this.fillHelp(); $('menu-box').classList.add('hidden'); $('help-box').classList.remove('hidden'); sfx.ui(); };
     $('btn-help-close').onclick = () => {
@@ -204,6 +223,7 @@ export class HUD {
   }
 
   showMenu() {
+    this.showMenuScreen('screen-home');
     $('menu').classList.remove('hidden');
     $('hud').classList.add('hidden');
     $('tacticalbar').classList.add('hidden');
@@ -374,6 +394,16 @@ export class HUD {
     }
 
     if (Date.now() > this.flashUntil) $('hint-bar').textContent = opts.hint;
+    // les panneaux ouverts suivent l'état réel (indispensable en multijoueur)
+    if (this.shopOpen) {
+      const st2 = structById(gs, team.stationId);
+      const sig = `${Math.floor(team.credits / 20)}|${st2?.level}|${ship?.cls}|${ship?.weapons.length}|${this.shopTab}|${JSON.stringify(team.upgrades)}|${team.gadgets.length}`;
+      if (sig !== this.shopSig) { this.shopSig = sig; this.refreshShop(gs); }
+    }
+    if (this.buildOpen) {
+      const sig = `${Math.floor(team.credits / 20)}`;
+      if (sig !== this.buildSig) { this.buildSig = sig; this.refreshBuild(gs); }
+    }
     this.updateOffers(gs);
     if (this.diploOpen) this.refreshDiplo(gs);
 
@@ -401,8 +431,10 @@ export class HUD {
       const planets = gs.planets.filter(p => p.alive && p.owner === id).length;
       const row = document.createElement('div');
       row.className = 'ts-row' + (t.alive ? '' : ' ts-dead');
-      const you = id === gs.playerTeam ? ' (vous)' : ` · ${PERSONAS[t.persona].nom}`;
-      row.innerHTML = `<span>${t.name}${you} — ${ships} vsx · ${planets} col.</span><span class="ts-dot" style="background:${t.cssColor}"></span>`;
+      const mpNames = (gs as unknown as { mpNames?: Record<number, string> }).mpNames;
+      const label = mpNames?.[id] ? mpNames[id] : t.name;
+      const you = id === gs.playerTeam ? ' (vous)' : (t.isAI ? ` · ${PERSONAS[t.persona].nom}` : '');
+      row.innerHTML = `<span>${label}${you} — ${ships} vsx · ${planets} col.</span><span class="ts-dot" style="background:${t.cssColor}"></span>`;
       box.appendChild(row);
     }
   }
@@ -748,14 +780,9 @@ export class HUD {
     $('btn-plan-obj').onclick = () => this.onPlanObjective();
     $('btn-plan-clear').onclick = () => this.onPlanClear();
     // multijoueur
-    const addr = $('mp-addr') as HTMLInputElement;
-    addr.value = `${location.hostname}:17771`;
-    const mpName = () => ($('mp-name') as HTMLInputElement).value.trim() || 'Amiral';
-    $('mp-quick').onclick = () => { sfx.ui(); this.onMpQuick(mpName(), addr.value.trim()); };
-    $('mp-create').onclick = () => { sfx.ui(); this.onMpCreate(mpName(), addr.value.trim()); };
     $('mp-join').onclick = () => {
       sfx.ui();
-      this.onMpJoin(mpName(), addr.value.trim(), ($('mp-code') as HTMLInputElement).value.trim().toUpperCase());
+      this.onMpJoin(this.mpName(), ($('mp-code') as HTMLInputElement).value.trim().toUpperCase());
     };
     $('btn-lobby-start').onclick = () => { sfx.buy(); this.onMpStart(); };
     $('btn-lobby-leave').onclick = () => { sfx.ui(); this.onMpLeave(); };
@@ -948,14 +975,92 @@ export class HUD {
   }
 
   // ================================================================
+  //  MENUS CIRCULAIRES (sélection, station, corps célestes)
+  // ================================================================
+  radialKind = '';         // '' = fermé
+  private radialEl: HTMLElement | null = null;
+
+  showRadial(kind: string, x: number, y: number,
+    items: { ic?: string; label: string; cb?: () => void; disabled?: boolean; sub?: { ic?: string; label: string; cb?: () => void; disabled?: boolean }[] }[],
+    centerLabel = '') {
+    this.hideRadial(true);
+    this.radialKind = kind;
+    const root = document.createElement('div');
+    root.id = 'radial';
+    root.style.left = `${x}px`;
+    root.style.top = `${y}px`;
+    document.getElementById('app')!.appendChild(root);
+    this.radialEl = root;
+    this.renderRadialItems(items, centerLabel);
+  }
+
+  private renderRadialItems(
+    items: { ic?: string; label: string; cb?: () => void; disabled?: boolean; sub?: { ic?: string; label: string; cb?: () => void; disabled?: boolean }[] }[],
+    centerLabel: string) {
+    const root = this.radialEl;
+    if (!root) return;
+    root.innerHTML = '';
+    if (centerLabel) {
+      const c = document.createElement('div');
+      c.className = 'radial-item rcenter';
+      c.textContent = centerLabel;
+      c.onclick = () => this.hideRadial();
+      root.appendChild(c);
+    }
+    const R = Math.max(78, 26 + items.length * 11);
+    items.forEach((it, i) => {
+      const a = -Math.PI / 2 + (i / items.length) * Math.PI * 2;
+      const el = document.createElement('div');
+      el.className = 'radial-item' + (it.disabled ? ' disabled' : '');
+      el.style.left = `${Math.cos(a) * R}px`;
+      el.style.top = `${Math.sin(a) * R}px`;
+      el.style.animationDelay = `${i * 0.02}s`;
+      el.innerHTML = (it.ic && ICONS[it.ic] ? ICONS[it.ic] : '') + `<span>${it.label}</span>`;
+      el.onclick = () => {
+        if (it.disabled) { sfx.error(); return; }
+        sfx.ui();
+        if (it.sub) {
+          const back = { ic: 'x', label: 'Fermer', cb: () => this.hideRadial() };
+          this.renderRadialItems([...it.sub, back], centerLabel);
+        } else {
+          it.cb?.();
+          this.hideRadial();
+        }
+      };
+      root.appendChild(el);
+    });
+  }
+
+  moveRadial(x: number, y: number) {
+    if (this.radialEl) { this.radialEl.style.left = `${x}px`; this.radialEl.style.top = `${y}px`; }
+  }
+
+  hideRadial(instant = false) {
+    const el = this.radialEl;
+    this.radialEl = null;
+    this.radialKind = '';
+    if (!el) return;
+    if (instant) { el.remove(); return; }
+    el.classList.add('closing');
+    window.setTimeout(() => el.remove(), 180);
+  }
+
+  // ================================================================
   //  PAUSE & FIN DE PARTIE
   // ================================================================
   getCfg(): MatchConfig { return { ...this.cfg }; }
 
-  showLobby(info: { code: string; players: { name: string; team: number; host: boolean }[]; isHost: boolean }) {
+  showLobby(info: { code: string; players: { name: string; team: number; host: boolean }[]; isHost: boolean; countdown?: number | null }) {
     $('menu').classList.add('hidden');
     $('lobby').classList.remove('hidden');
     $('lobby-code').textContent = info.code;
+    const cd = $('lobby-cd');
+    if (info.countdown != null) {
+      cd.classList.remove('hidden');
+      cd.textContent = `Départ automatique dans ${info.countdown} s — la partie se remplit…`;
+    } else {
+      cd.classList.add('hidden');
+    }
     const box = $('lobby-players');
     box.innerHTML = '';
     for (const pl of info.players) {

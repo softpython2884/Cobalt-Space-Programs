@@ -136,27 +136,43 @@
       <div id="menu-box">
         <h1 id="game-title">COBALT<span> SECTOR</span></h1>
         <p id="menu-tagline">Stratégie & action spatiale — parties de ~20 minutes</p>
-        <div id="menu-opts">
-          <div class="opt-row"><span class="opt-label">Votre couleur</span><div id="opt-color" class="opt-choices"></div></div>
-          <div class="opt-row"><span class="opt-label">Adversaires IA</span><div id="opt-ai" class="opt-choices"></div></div>
-          <div class="opt-row"><span class="opt-label">Comportement IA</span><div id="opt-persona" class="opt-choices"></div></div>
-          <div class="opt-row"><span class="opt-label">Système stellaire</span><div id="opt-star" class="opt-choices"></div></div>
-          <div class="opt-row"><span class="opt-label">Difficulté</span><div id="opt-diff" class="opt-choices"></div></div>
-        </div>
-        <button id="btn-start" class="big-btn">LANCER LA PARTIE</button>
-        <div id="menu-mp">
-          <div class="opt-row"><span class="opt-label">Multijoueur</span>
-            <input id="mp-name" class="mp-input" placeholder="Pseudo" maxlength="14" />
-            <input id="mp-addr" class="mp-input" placeholder="serveur:port" />
+
+        <!-- Accueil : les trois grands modes -->
+        <div id="screen-home" class="mscreen">
+          <button id="btn-solo" class="big-btn">SOLO</button>
+          <button id="btn-quick" class="big-btn">PARTIE RAPIDE</button>
+          <button id="btn-salons" class="big-btn">SALONS</button>
+          <div class="opt-row" style="justify-content:center;margin-top:14px">
+            <span class="opt-label" style="width:auto">Pseudo</span>
+            <input id="mp-name" class="mp-input" placeholder="Amiral" maxlength="14" />
           </div>
-          <div class="opt-row"><span class="opt-label"></span>
-            <button id="mp-quick" class="opt-chip">Partie rapide</button>
-            <button id="mp-create" class="opt-chip">Créer un salon</button>
-            <input id="mp-code" class="mp-input" placeholder="CODE" maxlength="5" style="width:74px;text-transform:uppercase" />
+          <button id="btn-help" class="small-btn">Comment jouer ?</button>
+        </div>
+
+        <!-- Configuration (solo OU création de salon) -->
+        <div id="screen-config" class="mscreen hidden">
+          <div id="menu-opts">
+            <div class="opt-row"><span class="opt-label">Votre couleur</span><div id="opt-color" class="opt-choices"></div></div>
+            <div class="opt-row"><span class="opt-label">Adversaires IA</span><div id="opt-ai" class="opt-choices"></div></div>
+            <div class="opt-row"><span class="opt-label">Comportement IA</span><div id="opt-persona" class="opt-choices"></div></div>
+            <div class="opt-row"><span class="opt-label">Système stellaire</span><div id="opt-star" class="opt-choices"></div></div>
+            <div class="opt-row"><span class="opt-label">Difficulté</span><div id="opt-diff" class="opt-choices"></div></div>
+          </div>
+          <button id="btn-start" class="big-btn">LANCER LA PARTIE</button>
+          <button id="btn-back-config" class="small-btn">Retour</button>
+        </div>
+
+        <!-- Salons -->
+        <div id="screen-salons" class="mscreen hidden">
+          <button id="btn-salon-pub" class="big-btn">CRÉER UN SALON PUBLIC</button>
+          <button id="btn-salon-priv" class="big-btn">CRÉER UN SALON PRIVÉ</button>
+          <div class="opt-row" style="justify-content:center;margin-top:12px">
+            <input id="mp-code" class="mp-input" placeholder="CODE" maxlength="5" style="width:90px;text-transform:uppercase" />
             <button id="mp-join" class="opt-chip">Rejoindre</button>
           </div>
+          <button id="btn-back-salons" class="small-btn">Retour</button>
         </div>
-        <button id="btn-help" class="small-btn">Comment jouer ?</button>
+
         <div id="menu-footer">v0.2 — Solo, LAN et en ligne</div>
       </div>
       <div id="help-box" class="hidden">
@@ -171,6 +187,7 @@
       <div class="overlay-box">
         <h2>SALON</h2>
         <div id="lobby-code"></div>
+        <div id="lobby-cd" class="panel-hint hidden"></div>
         <div id="lobby-players"></div>
         <button id="btn-lobby-start" class="big-btn hidden">LANCER LA PARTIE</button>
         <div id="lobby-wait" class="panel-hint">En attente de l'hôte…</div>
