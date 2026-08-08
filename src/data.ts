@@ -261,6 +261,16 @@ export const STATION_LEVEL_DESC = [
   'Niv. 3 : débloque Frappe orbitale et Flotte de soutien.',
 ];
 
+// ---------- Avant-postes : niveaux (coque/bouclier/tourelle renforcés) ----------
+export const OUTPOST_UPGRADE_PRICE = [0, 300, 500];   // vers niveau 2, 3
+export const OUTPOST_MAX_LEVEL = 3;
+
+// ---------- Carrefours commerciaux ----------
+// Plus d'équipes différentes commercent sur une planète, plus ça rapporte :
+// le marchand multiplie son profit, le propriétaire touche sa part à chaque chargement.
+export const TRADE_HUB_MULT = 0.5;        // +50 % de profit par équipe tierce présente
+export const TRADE_HUB_OWNER_CUT = 40;    // crédits pour le propriétaire par chargement étranger (×(1+boost))
+
 // ---------- Gardes orbitales (achetées en vue tactique) ----------
 export const GUARD_COST = [0, 500, 650, 850];   // indexé par niveau de station
 export const GUARD_COMP: Record<number, ShipClassId[]> = {

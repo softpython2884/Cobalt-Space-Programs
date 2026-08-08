@@ -5,14 +5,14 @@ import {
 } from './core';
 import {
   SHIP_CLASSES, PERSONAS, STRUCTS, COLONIZE_COST, STATION_UPGRADE_PRICE, DIFF_TUNING, DiffTuning,
-  STATION_UPGRADES, COLOSSE_LABS_REQUIRED, WEAPONS,
+  STATION_UPGRADES, COLOSSE_LABS_REQUIRED, WEAPONS, OUTPOST_MAX_LEVEL, GUARD_COST,
 } from './data';
 import { makeShip, nearestShip, nearestStruct, threatAround, canDetect, isEnemy } from './entities';
 import { createFleet, setFleetMission, fleetShips } from './orders';
 import {
   tryBuyShip, tryUpgradeStation, canPlaceStructure, placeStructure, teamScore,
   proposeAlliance, requestFocus, requestDefend, tryBuyStationUpgrade,
-  salveFireCmd, colossusWorldBreaker,
+  salveFireCmd, colossusWorldBreaker, tryUpgradeOutpost, buyGuards, breakAlliance,
 } from './sim';
 
 /** Réglages de difficulté effectifs : en facile, l'IA monte en puissance au fil
@@ -158,13 +158,16 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 
   // ---------- 1bis. PROJET COLOSSE : des labos dans les nuages, puis l'usine ----------
   // Les labos démarrent vers 12 min ; l'usine (donc le Colosse) reste un objectif d'après 20 min.
-  // Ce bloc passe AVANT les achats militaires : sinon les vaisseaux mangent tout le budget.
+  // RÈGLE D'OR : l'armée d'abord — le projet (et son épargne) se met en pause tant que
+  // la défense n'est pas correcte, sinon l'IA se fait raser en économisant pour son rêve.
   const myLabs = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'labo').length;
+  const armyOK = warships.length >= Math.min(7, 3 + Math.floor(minute / 8));
   const wantColossus = !team.colossusUsed && minute > 12
     && (escalate || persona.aggression > 0.4 || minute > 25);
-  const savingColossus = wantColossus && myLabs < COLOSSE_LABS_REQUIRED;
-  if (wantColossus) {
-    if (savingColossus && team.credits > STRUCTS.labo.prix + 100) {
+  const savingColossus = wantColossus && armyOK && myLabs < COLOSSE_LABS_REQUIRED;
+  const savingUsine = wantColossus && armyOK && myLabs >= COLOSSE_LABS_REQUIRED && minute > 18;
+  if (wantColossus && armyOK) {
+    if (myLabs < COLOSSE_LABS_REQUIRED && team.credits > STRUCTS.labo.prix + 100) {
       // essaie tous les nuages : les rivaux snipent les labos, il faut être tenace
       outer: for (const storm of gs.storms) {
         if (!storm.alive) continue;
@@ -173,7 +176,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
           if (!canPlaceStructure(gs, teamId, 'labo', pos)) { placeStructure(gs, teamId, 'labo', pos); break outer; }
         }
       }
-    } else if (!savingColossus && minute > 20 && team.credits > STRUCTS.usine.prix + 50) {
+    } else if (myLabs >= COLOSSE_LABS_REQUIRED && minute > 20 && team.credits > STRUCTS.usine.prix + 50) {
       for (let tries = 0; tries < 6; tries++) {
         const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 150 + gs.rng() * 200));
         if (!canPlaceStructure(gs, teamId, 'usine', pos)) { placeStructure(gs, teamId, 'usine', pos); break; }
@@ -189,9 +192,8 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     Math.round((1 + persona.aggression * 3 + minute / 3.5) * tune.warshipMult) + (escalate ? 4 : 0)));
 
   // réserve d'argent selon la personnalité (+ budget gelé pour une colonisation en cours,
-  // + épargne pour le prochain laboratoire du projet Colosse)
+  // + épargne pour le projet Colosse — uniquement quand l'armée tient debout)
   const colonizeReserve = transporters.some(t => t.order.kind === 'colonize') ? COLONIZE_COST : 0;
-  const savingUsine = wantColossus && !savingColossus && minute > 18;
   const reserve = (escalate ? 60 : 150 + persona.defense * 250) + colonizeReserve
     + (savingColossus ? 380 : 0) + (savingUsine ? 1500 : 0);
   let purchases = 0;
@@ -200,7 +202,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   if (miners.length < wantMiners && canBuy(SHIP_CLASSES.mineur.prix)) {
     if (!tryBuyShip(gs, teamId, 'mineur', false)) purchases++;
   }
-  if (transporters.length < wantTransporters && canBuy(SHIP_CLASSES.transporteur.prix + COLONIZE_COST)) {
+  // l'expansion ignore l'épargne Colosse : une planète libre, ça ne se refuse pas
+  if (transporters.length < wantTransporters && purchases < 3
+    && team.credits - (SHIP_CLASSES.transporteur.prix + COLONIZE_COST) > 150 + colonizeReserve) {
     if (!tryBuyShip(gs, teamId, 'transporteur', false)) purchases++;
   }
   if (cargos.length < wantCargos && canBuy(SHIP_CLASSES.cargo.prix)) {
@@ -234,13 +238,33 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   // ---------- 4. CONSTRUCTION (cadence selon la difficulté, avant-postes plafonnés) ----------
   if (team.credits > 900 && gs.rng() < 0.25 * tune.buildMult) {
     const myOutposts = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'avantposte').length;
-    const outpostCap = 1 + Math.floor(minute / 7);
+    const outpostCap = 1 + Math.floor(minute / 7) + (persona.defense > 0.6 ? 1 : 0);
     let stype: 'mine' | 'avantposte' | 'satellite' = gs.rng() < 0.5 ? 'mine' : gs.rng() < 0.75 ? 'avantposte' : 'satellite';
     if (stype === 'avantposte' && myOutposts >= outpostCap) stype = 'mine';
     for (let tries = 0; tries < 6; tries++) {
       const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 120 + gs.rng() * 260));
       if (!canPlaceStructure(gs, teamId, stype, pos)) { placeStructure(gs, teamId, stype, pos); break; }
     }
+  }
+
+  // ---------- 4ter. DÉFENSE DU CŒUR : jamais de station nue ----------
+  const myOutpostList = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'avantposte');
+  // premier avant-poste garanti dès la 6e minute (sans lui, 20 chasseurs rasent tout)
+  if (myOutpostList.length === 0 && minute > 6 && team.credits > STRUCTS.avantposte.prix + 150) {
+    for (let tries = 0; tries < 8; tries++) {
+      const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 100 + gs.rng() * 160));
+      if (!canPlaceStructure(gs, teamId, 'avantposte', pos)) { placeStructure(gs, teamId, 'avantposte', pos); break; }
+    }
+  }
+  // avant-postes améliorés (défensifs et survivants d'abord)
+  if ((escalate || persona.defense > 0.5 || minute > 20) && team.credits > 1100 && gs.rng() < 0.1) {
+    const target = myOutpostList.find(o => o.level < OUTPOST_MAX_LEVEL);
+    if (target) tryUpgradeOutpost(gs, teamId, target.id);
+  }
+  // gardes orbitales autour du cœur en fin de partie
+  if ((escalate || persona.defense > 0.6 || minute > 22)
+    && team.credits > (GUARD_COST[station.level] ?? 500) + 600 && gs.rng() < 0.08) {
+    buyGuards(gs, teamId, station.id);
   }
 
 
@@ -280,6 +304,17 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     if (foes.length > 0) {
       const strongest = foes.reduce((x, y) => teamScore(gs, x) >= teamScore(gs, y) ? x : y);
       requestFocus(gs, teamId, myAllies[0], strongest);
+    }
+  }
+  // les alliances ne sont pas éternelles : l'IA rompt quand ça l'arrange —
+  // plus d'ennemi commun (le pacte n'a plus de sens), ou un allié devenu trop dangereux
+  if (myAllies.length > 0 && gs.rng() < 0.025) {
+    const partner = myAllies[0];
+    const commonFoe = gs.activeTeams.some(id => gs.teams[id].alive && id !== teamId && id !== partner
+      && !areAllied(gs, teamId, id));
+    const pScore = teamScore(gs, partner), myScore = teamScore(gs, teamId);
+    if (!commonFoe || (pScore > myScore * 1.45 && gs.rng() < 0.25 + persona.aggression * 0.4)) {
+      breakAlliance(gs, teamId, partner);
     }
   }
 

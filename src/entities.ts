@@ -22,7 +22,7 @@ export function makeShip(gs: GameState, team: number, cls: ShipClassId, pos: V2,
     stasisT: 0, empT: 0, cloakT: 0, smokeT: 0, invulnT: 0, jumpT: 0,
     lastDmgT: -999, aiCd: gs.rng() * 0.5, avoidSeed: gs.rng() * 100,
     isFlagship: false, alive: true, supportT: 0, lockT: 0, lockTargetId: -1,
-    miningRes: null, colonizeT: 0, tradePhase: 0, kills: 0,
+    miningRes: null, colonizeT: 0, tradePhase: 0, tradeBoost: 0, kills: 0,
   };
   gs.ships.push(ship);
   return ship;

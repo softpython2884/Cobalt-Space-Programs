@@ -735,14 +735,16 @@ export class HUD {
       div.innerHTML = `<div class="o-title">${ICONS.radio}TRANSMISSION ENTRANTE</div>${txt}`;
       const btns = document.createElement('div');
       btns.className = 'o-btns';
+      // '#' force une reconstruction : '' serait égal à la signature « aucune offre »
+      // et la boîte resterait affichée après Accepter/Refuser
       const ok = document.createElement('button');
       ok.className = 'tb-btn';
       ok.innerHTML = ICONS.check + 'Accepter';
-      ok.onclick = () => { this.onOfferAccept(o.id); this.offersSig = ''; };
+      ok.onclick = () => { this.onOfferAccept(o.id); this.offersSig = '#'; };
       const no = document.createElement('button');
       no.className = 'tb-btn';
       no.innerHTML = ICONS.x + 'Refuser';
-      no.onclick = () => { this.onOfferRefuse(o.id); this.offersSig = ''; };
+      no.onclick = () => { this.onOfferRefuse(o.id); this.offersSig = '#'; };
       const timer = document.createElement('span');
       timer.className = 'o-timer';
       timer.id = `offer-t-${o.id}`;

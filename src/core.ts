@@ -105,6 +105,7 @@ export interface Ship {
   miningRes: Res | null;          // ressource en cours de minage (visuel)
   colonizeT: number;              // canal de colonisation en cours
   tradePhase: 0 | 1;              // 0 = va vers la planète, 1 = retourne à la station
+  tradeBoost: number;             // carrefour commercial : équipes tierces présentes au chargement
   kills: number;
 }
 

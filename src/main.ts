@@ -1,21 +1,24 @@
 // ============ COBALT SECTOR — point d'entrée & boucle de jeu ============
 import {
-  GameState, MatchConfig, SIM_DT, V2, dist, clamp, StructType, GadgetId,
+  GameState, MatchConfig, SIM_DT, V2, dist, clamp, turnToward, StructType, GadgetId,
   structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind, PlanFilter, Stance,
 } from './core';
-import { SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST, PLANET_UPGRADE_COST } from './data';
+import {
+  SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST, PLANET_UPGRADE_COST,
+  OUTPOST_UPGRADE_PRICE, OUTPOST_MAX_LEVEL,
+} from './data';
 import { newGame } from './world';
 import {
   simTick, playerShip, playerMine, dropMine, toggleMode, tryJump, activateGadget,
   takeControlNearest, placeStructure, canPlaceStructure, fireShipWeapon,
-  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, tryBuyStationUpgrade,
+  tryBuyShip, tryBuyUpgrade, tryBuyWeapon, tryBuyGadget, tryUpgradeStation, tryBuyStationUpgrade, tryUpgradeOutpost,
   missileSlot, lockTick, lockRelease, lockCancel, nearestIncomingMissile, enemyLockingShip,
   colossusLockTick, colossusSalveRelease, colossusWorldBreaker, colossusStatus,
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
   tryUpgradePlanet, requestDefend,
 } from './sim';
 import { setFleetMission, removeFromFleet } from './orders';
-import { canDetect } from './entities';
+import { canDetect, speedMult } from './entities';
 import { createFleet, disbandFleet, issueOrder, fleetShips } from './orders';
 import { Renderer3D } from './render3d';
 import { HUD } from './hud';
@@ -95,6 +98,7 @@ function localExec(name: string, a: any): string | null {
     case 'buyGadget': return tryBuyGadget(gs, team, a.gid);
     case 'upgradeStation': return tryUpgradeStation(gs, team);
     case 'stationUp': return tryBuyStationUpgrade(gs, team, a.id);
+    case 'outpostUp': return tryUpgradeOutpost(gs, team, a.structId);
     case 'place': return placeStructure(gs, team, a.stype, a.pos);
     case 'planetUp': return tryUpgradePlanet(gs, team, a.planetId);
     case 'guards': return buyGuards(gs, team, a.targetId);
@@ -712,6 +716,12 @@ function openSelectionRadial(sx: number, sy: number) {
     if (bodyToProtect && armedSel.length > 0) {
       items.push({ ic: 'orbit', label: 'Protéger corps', cb: () => cmd('protect', { ids: armedSel, targetId: bodyToProtect.id }) });
     }
+    if (pStruct && pStruct.team === g.playerTeam && pStruct.stype === 'avantposte' && pStruct.level < OUTPOST_MAX_LEVEL) {
+      items.push({
+        ic: 'plus', label: `Améliorer AP (${OUTPOST_UPGRADE_PRICE[pStruct.level]})`,
+        cb: () => { const e2 = cmd('outpostUp', { structId: pStruct.id }); if (e2) { sfx.error(); hud.flashHint(e2); } else sfx.buy(); },
+      });
+    }
     items.push({ ic: 'plus', label: 'Créer flotte', cb: () => hud.onFleetCreate() });
   }
   items.push({
@@ -757,9 +767,10 @@ function updateRadials(aim: V2) {
   if (!gs || !renderer) return;
   const ship = playerShip(gs);
   const kind = hud.radialKind;
-  // vue tactique / fort dézoom : TOUS les menus circulaires se masquent (même celui de sélection)
+  // vue tactique / fort dézoom : les menus circulaires AUTOMATIQUES se masquent —
+  // celui du double clic droit reste permis (il est explicite, et bien pratique sur la carte)
   if (renderer.isTactical() || renderer.camH > 200) {
-    if (kind) hud.hideRadial();
+    if (kind && kind !== 'selection') hud.hideRadial();
     return;
   }
   if (kind === 'selection') return;   // fermé par clic / action
@@ -927,6 +938,16 @@ function openOrderMenu(sx: number, sy: number) {
       },
     });
   }
+  if (pickedStruct && pickedStruct.team === gs.playerTeam && pickedStruct.stype === 'avantposte'
+    && pickedStruct.level < OUTPOST_MAX_LEVEL) {
+    items.push({
+      label: `Améliorer l'avant-poste (${OUTPOST_UPGRADE_PRICE[pickedStruct.level]}) — niv. ${pickedStruct.level}`, ic: 'plus',
+      cb: () => {
+        const err = cmd('outpostUp', { structId: pickedStruct.id });
+        if (err) { sfx.error(); hud.flashHint(err); } else sfx.buy();
+      },
+    });
+  }
   if (items.length === 0 && pickedPlanet) {
     title = pickedPlanet.name.toUpperCase();
     const ownerTxt = pickedPlanet.owner >= 0 ? `Colonie ${gs.teams[pickedPlanet.owner].name}` : 'Neutre — colonisable (transporteur requis)';
@@ -1057,6 +1078,19 @@ function frame(now: number) {
   if (mpMode) {
     // le serveur simule ; ici : estime entre deux instantanés + résorption douce de l'écart
     if (gs.status === 'playing') {
+      // PRÉDICTION LOCALE de notre vaisseau : la poussée est déjà appliquée par handleInput,
+      // mais sans traînée ni plafond de vitesse la vitesse dérivait entre deux instantanés —
+      // d'où les saccades en virage. On reproduit ici la physique exacte du serveur.
+      const own = gs.ships.find(sh2 => sh2.id === gs!.playerShipId);
+      if (own && own.empT <= 0 && own.jumpT <= 0) {
+        const def = SHIP_CLASSES[own.cls];
+        own.vel.x *= Math.max(0, 1 - 1.1 * elapsed);   // même DRAG que la sim
+        own.vel.y *= Math.max(0, 1 - 1.1 * elapsed);
+        const maxV = def.speed * speedMult(gs, own);
+        const v = Math.hypot(own.vel.x, own.vel.y);
+        if (v > maxV) { own.vel.x *= maxV / v; own.vel.y *= maxV / v; }
+        if (v > 6) own.heading = turnToward(own.heading, Math.atan2(own.vel.y, own.vel.x), def.turn * elapsed);
+      }
       const decay = Math.exp(-9 * elapsed);   // l'écart fond en ~0,25 s
       for (const sh of gs.ships) {
         sh.pos.x += sh.vel.x * elapsed; sh.pos.y += sh.vel.y * elapsed;

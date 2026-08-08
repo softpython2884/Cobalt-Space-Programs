@@ -16,6 +16,7 @@ import {
   DEPOT_RATE, DEPOT_CAP, DEPOT_ALLY_BONUS, ALLY_TRADE_MULT, ALLIANCE_DURATION, PLANET_UPGRADE_COST, PLANET_UPGRADE_HP, DIFF_TUNING,
   COLOSSE_LABS_REQUIRED, COLOSSE_BUILD_TIME, COLOSSE_RAY_COUNT, COLOSSE_RAY_RANGE, COLOSSE_SALVO_SIZE,
   STATION_UPGRADES, STATION_SALVO_SIZE, STATION_SALVO_CD, STATION_BEAM_RANGE, AEGIS_DUR, AEGIS_CD,
+  OUTPOST_UPGRADE_PRICE, OUTPOST_MAX_LEVEL, TRADE_HUB_MULT, TRADE_HUB_OWNER_CUT,
 } from './data';
 import {
   makeRoid, makeCloud,
@@ -831,18 +832,43 @@ function tradeBehavior(gs: GameState, s: Ship, dt: number) {
     s.order.targetId = planet.id;
   }
   if (s.tradePhase === 0) {
-    if (dist(s.pos, planet.pos) < planet.radius + 30) { s.tradePhase = 1; gs.fx.push({ type: 'impact', pos: { ...s.pos }, color: 0xffd84b, size: 6 }); }
-    else moveToward(gs, s, planet.pos, dt, planet.radius + 20);
+    if (dist(s.pos, planet.pos) < planet.radius + 30) {
+      s.tradePhase = 1;
+      gs.fx.push({ type: 'impact', pos: { ...s.pos }, color: 0xffd84b, size: 6 });
+      // CARREFOUR COMMERCIAL : chaque équipe tierce dont un civil fréquente la planète
+      // dope le profit du marchand — et le propriétaire touche sa part au chargement
+      const visitors = new Set<number>();
+      for (const o of gs.ships) {
+        if (!o.alive || o.team === s.team || o.team === PIRATE_TEAM || !SHIP_CLASSES[o.cls].civil) continue;
+        if (dist(o.pos, planet.pos) < planet.radius + 90) visitors.add(o.team);
+      }
+      s.tradeBoost = Math.min(3, visitors.size);
+      const owner = planet.owner >= 0 && planet.owner !== s.team ? gs.teams[planet.owner] : null;
+      if (owner) {
+        const cut = Math.round(TRADE_HUB_OWNER_CUT * (1 + s.tradeBoost));
+        owner.credits += cut;
+        if (planet.owner === gs.playerTeam) addLog(gs, `${planet.name} : taxe de comptoir +${cut} crédits.`, '#ffd84b');
+      }
+      if (s.tradeBoost >= 2 && (s.team === gs.playerTeam || planet.owner === gs.playerTeam)) {
+        addLog(gs, `${planet.name} devient un carrefour commercial (${s.tradeBoost + 1} équipes) — jackpot !`, '#6dff8a');
+      }
+    } else moveToward(gs, s, planet.pos, dt, planet.radius + 20);
   } else {
     const st = structById(gs, team.stationId);
     if (!st) { s.order = { ...IDLE }; return; }
     if (dist(s.pos, st.pos) < DOCK_RANGE) {
-      // le commerce avec une colonie ALLIÉE rapporte trois fois plus
+      // le commerce avec une colonie ALLIÉE rapporte trois fois plus,
+      // et le multiplicateur de carrefour s'ajoute par-dessus
       const allied = planet.owner !== s.team;
-      const profit = allied ? TRADE_PROFIT * ALLY_TRADE_MULT : TRADE_PROFIT;
+      const profit = Math.round((allied ? TRADE_PROFIT * ALLY_TRADE_MULT : TRADE_PROFIT)
+        * (1 + TRADE_HUB_MULT * s.tradeBoost));
       team.credits += profit;
       s.tradePhase = 0;
-      if (s.team === gs.playerTeam) addLog(gs, `Livraison commerciale${allied ? ' (alliée)' : ''} : +${profit} crédits.`, '#ffd84b');
+      if (s.team === gs.playerTeam) {
+        const hub = s.tradeBoost > 0 ? ` (carrefour ×${(1 + TRADE_HUB_MULT * s.tradeBoost).toFixed(1)})` : '';
+        addLog(gs, `Livraison commerciale${allied ? ' (alliée)' : ''}${hub} : +${profit} crédits.`, '#ffd84b');
+      }
+      s.tradeBoost = 0;
     } else moveToward(gs, s, st.pos, dt, DOCK_RANGE * 0.5);
   }
 }
@@ -1246,14 +1272,17 @@ function updateStructures(gs: GameState, dt: number) {
       if (st.team === gs.playerTeam) setAlert(gs, `BOUCLIER D'URGENCE ACTIVÉ (${Math.round(AEGIS_DUR[aegisLvl])} s)`, 3, '#7adfff');
     }
 
-    // tourelle (armement niv. 1 : cadence et dégâts accrus)
+    // tourelle (armement niv. 1 : cadence et dégâts accrus ;
+    // avant-poste amélioré : portée, dégâts et cadence par niveau)
     if (def.weaponDmg > 0 && st.fireCd <= 0) {
-      const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, def.weaponRange);
+      const opLvl = st.stype === 'avantposte' ? st.level - 1 : 0;
+      const wRange = def.weaponRange + opLvl * 35;
+      const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, wRange);
       if (foe) {
-        st.fireCd = def.weaponCd * (armLvl >= 1 ? 0.55 : 1);
+        st.fireCd = def.weaponCd * (armLvl >= 1 ? 0.55 : 1) * (1 - 0.15 * opLvl);
         const dir = norm(sub(foe.pos, st.pos));
         makeProjectile(gs, st.team, 'canon', add(st.pos, scale(dir, st.radius + 2)), scale(dir, 280),
-          def.weaponDmg + st.level * 2 + (armLvl >= 1 ? 6 : 0), def.weaponRange / 280 * 1.1, null);
+          def.weaponDmg + st.level * 2 + (armLvl >= 1 ? 6 : 0) + opLvl * 5, wRange / 280 * 1.1, null);
         gs.fx.push({ type: 'tir', pos: { ...st.pos }, color: 0xffd27a, wid: 'canon' });
       }
     }
@@ -1718,6 +1747,24 @@ export function tryUpgradeStation(gs: GameState, teamId: number): string | null 
   return null;
 }
 
+/** Améliore un avant-poste : coque, bouclier et tourelle renforcés (niv. max 3). */
+export function tryUpgradeOutpost(gs: GameState, teamId: number, structId: number): string | null {
+  const team = gs.teams[teamId];
+  if (!team) return 'Équipe invalide';
+  const st = structById(gs, structId);
+  if (!st || st.stype !== 'avantposte') return 'Avant-poste introuvable';
+  if (st.team !== teamId) return 'Cet avant-poste ne vous appartient pas';
+  if (st.level >= OUTPOST_MAX_LEVEL) return 'Avant-poste au niveau maximum';
+  const price = OUTPOST_UPGRADE_PRICE[st.level];
+  if (team.credits < price) return 'Crédits insuffisants';
+  team.credits -= price;
+  st.level++;
+  st.hullMax += 260; st.hull += 260;
+  st.shieldMax += 90; st.shield = Math.min(st.shieldMax, st.shield + 90);
+  addLog(gs, `Avant-poste amélioré : niveau ${st.level}.`, team.cssColor);
+  return null;
+}
+
 /** Achète un niveau d'amélioration défensive de la station (même mécanique que celles du vaisseau). */
 export function tryBuyStationUpgrade(gs: GameState, teamId: number, upgradeId: string): string | null {
   const team = gs.teams[teamId];
@@ -1997,33 +2044,57 @@ function updateFleetMissions(gs: GameState, dt: number) {
       if (f.patrolAngle < 3) continue;   // réévalue la répartition toutes les ~3 s
       f.patrolAngle = 0;
       const R = 460;
-      const outposts = gs.structures.filter(st2 => st2.alive && st2.id !== core.id
-        && isEnemy(f.team, st2.team) && STRUCTS[st2.stype].weaponDmg > 0 && dist(st2.pos, core.pos) < R);
+      const coreTeam = core.kind === 'planet' ? core.owner : core.team;
+      const lead0 = shipById(gs, f.leaderId) ?? ships[0];
+      // cibles de zone : TOUTES les structures et colonies de l'équipe visée autour du
+      // cœur (labos compris) — « attaquer l'infrastructure » rase le quartier entier
+      const zone: number[] = [
+        ...gs.structures.filter(st2 => st2.alive && st2.id !== core.id
+          && st2.team === coreTeam && dist(st2.pos, core.pos) < R)
+          .sort((x, y) => (STRUCTS[y.stype].weaponDmg > 0 ? 1 : 0) - (STRUCTS[x.stype].weaponDmg > 0 ? 1 : 0))
+          .map(st2 => st2.id),
+        ...gs.planets.filter(pl => pl.alive && pl.id !== core.id && pl.owner >= 0
+          && pl.owner === coreTeam && dist(pl.pos, core.pos) < R).map(pl => pl.id),
+      ];
       const bombers = ships.filter(sh => sh.cls === 'bombardier');
       const bomberIds = new Set(bombers.map(b2 => b2.id));
-      // menaces : les ennemis qui tirent sur nos unités vulnérables passent en priorité
+      // menaces : autour du cœur, mais aussi croisées EN ROUTE (autour du chef) —
+      // les ennemis qui tirent sur nos unités vulnérables passent en priorité
       const vulnerable = new Set([...bomberIds, ...ships.filter(sh => SHIP_CLASSES[sh.cls].civil).map(sh => sh.id)]);
       const foes = gs.ships
-        .filter(sh => sh.alive && isEnemy(f.team, sh.team) && SHIP_CLASSES[sh.cls].power > 3 && dist(sh.pos, core.pos) < R)
+        .filter(sh => sh.alive && isEnemy(f.team, sh.team) && SHIP_CLASSES[sh.cls].power > 3
+          && (dist(sh.pos, core.pos) < R || dist(sh.pos, lead0.pos) < 340))
         .sort((x, y) => {
           const px = x.order.kind === 'attack' && vulnerable.has(x.order.targetId ?? -1) ? 0 : 1;
           const py = y.order.kind === 'attack' && vulnerable.has(y.order.targetId ?? -1) ? 0 : 1;
           return px - py || dist(x.pos, core.pos) - dist(y.pos, core.pos);
         });
-      // bombardiers : 2/3 sur le cœur, 1/3 sur les avant-postes voisins
+      const foePower = foes.reduce((a, x) => a + SHIP_CLASSES[x.cls].power, 0);
+      // bombardiers : 2/3 sur le cœur, 1/3 réparti sur le reste de la zone
       bombers.forEach((b2, i) => {
-        const onCore = outposts.length === 0 || i < Math.max(1, Math.ceil(bombers.length * 0.66));
-        const want = onCore ? core.id : outposts[i % outposts.length].id;
+        const onCore = zone.length === 0 || i < Math.max(1, Math.ceil(bombers.length * 0.66));
+        const want = onCore ? core.id : zone[i % zone.length];
         if (b2.order.kind !== 'attack' || b2.order.targetId !== want) b2.order = { kind: 'attack', targetId: want };
       });
-      // chasseurs & co : d'abord les vaisseaux ennemis (menaces en tête), sinon
-      // les avant-postes, sinon le cœur — chacun sa cible, dans le rayon d'action
+      // chasseurs : un DÉTACHEMENT dimensionné sur la menace part au contact
+      // (jusqu'à toute la flotte si l'ennemi est puissant), le reste couvre zone et cœur —
+      // menace éliminée = à la prochaine réévaluation, tout le monde reprend l'assaut
       const fighters = ships.filter(sh => !bomberIds.has(sh.id) && SHIP_CLASSES[sh.cls].power > 3);
-      fighters.forEach((c2, i) => {
+      let need = foePower * 1.35;
+      let fi = 0, zi = 0;
+      fighters.forEach(c2 => {
         let want: number;
-        if (foes.length > 0) want = foes[i % foes.length].id;
-        else if (outposts.length > 0) want = outposts[i % outposts.length].id;
-        else want = core.id;
+        if (foes.length > 0 && need > 0) {
+          want = foes[fi % foes.length].id;
+          fi++;
+          need -= SHIP_CLASSES[c2.cls].power;
+        } else if (zone.length > 0 && zi % 2 === 1) {
+          want = zone[(zi >> 1) % zone.length];
+          zi++;
+        } else {
+          want = core.id;
+          zi++;
+        }
         if (c2.order.kind !== 'attack' || c2.order.targetId !== want) c2.order = { kind: 'attack', targetId: want };
       });
       continue;
@@ -2282,26 +2353,25 @@ function updateColossus(gs: GameState, dt: number) {
   gs.colossusBeams.length = 0;
   for (const c of gs.ships) {
     if (!c.alive || c.cls !== 'colosse') continue;
-    // cibles : jusqu'à 5 ennemis distincts à portée
-    const targets: (Ship | Structure)[] = [];
-    const candidates: (Ship | Structure)[] = [
-      ...gs.ships.filter(x => x.alive && isEnemy(c.team, x.team) && x.cloakT <= 0 && x.smokeT <= 0
-        && dist(x.pos, c.pos) < COLOSSE_RAY_RANGE),
-      ...gs.structures.filter(x => x.alive && isEnemy(c.team, x.team)
-        && dist(x.pos, c.pos) < COLOSSE_RAY_RANGE),
-    ].sort((x, y) => dist(x.pos, c.pos) - dist(y.pos, c.pos));
+    // cibles : jusqu'à 5 VAISSEAUX ennemis distincts à portée (les rayons anti-vaisseaux
+    // ne mordent pas sur les structures — salve et Brise-Monde s'en chargent)
+    const targets: Ship[] = [];
+    const candidates: Ship[] = gs.ships
+      .filter(x => x.alive && isEnemy(c.team, x.team) && x.cloakT <= 0 && x.smokeT <= 0
+        && dist(x.pos, c.pos) < COLOSSE_RAY_RANGE)
+      .sort((x, y) => dist(x.pos, c.pos) - dist(y.pos, c.pos));
     for (const t of candidates) {
       if (targets.length >= COLOSSE_RAY_COUNT) break;
       targets.push(t);
     }
     for (const t of targets) {
-      if (c.energy < 6) break;
+      if (c.energy < 10) break;
       const key = `${c.id}:${t.id}`;
       const heat = Math.min(4, (rayHeat.get(key) ?? 0) + dt);   // plus c'est long, plus ça brûle
       rayHeat.set(key, heat);
       const dmg = (7 + heat * 5) * dt;
       applyDamage(gs, t, dmg, c.team);
-      c.energy = Math.max(0, c.energy - (2.2 + heat * 1.3) * dt);
+      c.energy = Math.max(0, c.energy - (4 + heat * 2) * dt);   // des rayons voraces en énergie
       // faisceau continu : le rendu lit cet état à chaque frame
       gs.colossusBeams.push({ x1: c.pos.x, y1: c.pos.y, x2: t.pos.x, y2: t.pos.y, heat });
     }

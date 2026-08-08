@@ -1,6 +1,7 @@
 // ============ COBALT SECTOR — ordres, flottes, formations ============
 import {
-  GameState, Ship, Fleet, FormationId, Order, V2, v2, fromAngle, shipById, addLog, IDLE, norm, sub,
+  GameState, Ship, Fleet, FormationId, Order, V2, v2, fromAngle, shipById, structById, planetById,
+  addLog, IDLE, norm, sub, dist,
 } from './core';
 import { SHIP_CLASSES } from './data';
 
@@ -152,6 +153,26 @@ export function issueOrder(gs: GameState, shipIds: number[], order: Order) {
     s.colonizeT = 0;
     done.add(id);
     direct.push(s);
+  }
+  // « Attaquer l'infrastructure » en groupe : un seul ordre suffit — l'assaut se
+  // répartit sur toutes les structures/colonies de la même équipe dans la zone
+  // (ex. 4 laboratoires côte à côte : l'escouade se divise et rase le quartier)
+  if (order.kind === 'attack' && order.targetId != null && direct.length > 1) {
+    const core = structById(gs, order.targetId) ?? planetById(gs, order.targetId);
+    if (core) {
+      const coreTeam = core.kind === 'planet' ? core.owner : core.team;
+      const zone: number[] = [core.id];
+      for (const st of gs.structures) {
+        if (st.alive && st.id !== core.id && st.team === coreTeam && dist(st.pos, core.pos) < 460) zone.push(st.id);
+      }
+      for (const pl of gs.planets) {
+        if (pl.alive && pl.id !== core.id && pl.owner >= 0 && pl.owner === coreTeam
+          && dist(pl.pos, core.pos) < 460) zone.push(pl.id);
+      }
+      if (zone.length > 1) {
+        direct.forEach((sh, i) => { sh.order = { kind: 'attack', targetId: zone[i % zone.length] }; });
+      }
+    }
   }
   // « Déplacer ici » en groupe : coin à pointe plate (rangées 3, 5, 7…)
   // pour que les vaisseaux ne s'empilent pas sur le point d'arrivée
