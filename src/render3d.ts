@@ -55,6 +55,9 @@ export class Renderer3D {
   renderer: THREE.WebGLRenderer;
 
   camH = 120;              // hauteur caméra (zoom)
+  /** Solo : reliquat de l'accumulateur de sim (s) — les visuels extrapolent pos + vel×t
+   *  pour gommer le crénelage du pas fixe 60 Hz (l'effet « fantôme » entre deux pas). */
+  extrapolate = 0;
   camPos: V2 = v2();       // position caméra (vue tactique libre)
   private camCur = new THREE.Vector3(0, 120, 0);
 
@@ -520,7 +523,9 @@ export class Renderer3D {
         this.meshes.set(s.id, m);
         this.scene.add(m);
       }
-      m.position.set(s.pos.x, 0, s.pos.y);
+      const ex = this.extrapolate;
+      const vx = s.pos.x + s.vel.x * ex, vy = s.pos.y + s.vel.y * ex;
+      m.position.set(vx, 0, vy);
       m.rotation.y = -s.heading;
       // roulis léger dans les virages
       const targetRoll = clamp(-((s.vel.x * Math.sin(s.heading)) - (s.vel.y * Math.cos(s.heading))) * -0.008, -0.5, 0.5);
@@ -545,7 +550,7 @@ export class Renderer3D {
 
       // icône tactique : forme géométrique propre à la classe (amiral : cadre)
       const iconShape = s.isFlagship ? 'diamond' : CLASS_SHAPE[s.cls];
-      this.syncIcon(s.id, s.pos, iconShape, teamColorOf(s.team), tactical && detected, s.heading);
+      this.syncIcon(s.id, { x: vx, y: vy }, iconShape, teamColorOf(s.team), tactical && detected, s.heading);
     }
 
     // Structures
@@ -755,7 +760,7 @@ export class Renderer3D {
         this.meshes.set(p.id, m);
         this.scene.add(m);
       }
-      m.position.set(p.pos.x, 0, p.pos.y);
+      m.position.set(p.pos.x + p.vel.x * this.extrapolate, 0, p.pos.y + p.vel.y * this.extrapolate);
       m.rotation.y = -Math.atan2(p.vel.y, p.vel.x);
       // traînée des missiles
       if (p.wid === 'missile' && Math.random() < dt * 40) {
@@ -1172,7 +1177,8 @@ export class Renderer3D {
     } else {
       const ship = gs.ships.find(s => s.id === gs.playerShipId && s.alive);
       if (ship) {
-        target = ship.pos;
+        // même extrapolation que le vaisseau affiché : caméra et coque restent solidaires
+        target = { x: ship.pos.x + ship.vel.x * this.extrapolate, y: ship.pos.y + ship.vel.y * this.extrapolate };
         this.camPos = { ...ship.pos };
       } else {
         target = this.camPos;
@@ -1202,7 +1208,7 @@ export class Renderer3D {
     else {
       this.aimGroup.visible = true;
       const a = Math.atan2(aimWorld.y - ship.pos.y, aimWorld.x - ship.pos.x);
-      this.aimGroup.position.set(ship.pos.x, 1, ship.pos.y);
+      this.aimGroup.position.set(ship.pos.x + ship.vel.x * this.extrapolate, 1, ship.pos.y + ship.vel.y * this.extrapolate);
       const r = ship.radius + 7;
       this.aimArc.rotation.z = -a;
       if (this.aimArcRadius !== r) {

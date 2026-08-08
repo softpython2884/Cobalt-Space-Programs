@@ -185,11 +185,22 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 
   // ---------- 2. ÉCONOMIE : effectifs voulus ----------
-  const wantMiners = Math.round(1 + persona.ecoFocus * 2.5);
+  // une économie qui grossit avec la partie : les mineurs financent l'armée
+  const wantMiners = Math.round(2 + persona.ecoFocus * 2 + Math.min(3, minute / 6));
   const wantCargos = myPlanets.length > 0 ? Math.round(1 + persona.ecoFocus * 1.5) : 0;
   const wantTransporters = neutralPlanets.length > 0 && minute > 1.5 ? 1 : 0;
-  const wantWarships = Math.max(1, Math.min(escalate ? 14 : 9,
-    Math.round((1 + persona.aggression * 3 + minute / 3.5) * tune.warshipMult) + (escalate ? 4 : 0)));
+  // effectifs militaires : une VRAIE armée, calée sur la plus grosse armée adverse —
+  // un joueur qui débarque avec 20 chasseurs et 4 bombardiers ne doit surprendre personne
+  let enemyMaxWar = 0;
+  for (const id of gs.activeTeams) {
+    if (id === teamId || !gs.teams[id].alive || areAllied(gs, teamId, id)) continue;
+    const n = gs.ships.filter(s2 => s2.alive && s2.team === id && SHIP_CLASSES[s2.cls].power > 5).length;
+    if (n > enemyMaxWar) enemyMaxWar = n;
+  }
+  const wantWarships = Math.max(2, Math.min(escalate ? 26 : 20, Math.max(
+    Math.round((2 + persona.aggression * 3 + minute / 2.2) * tune.warshipMult) + (escalate ? 4 : 0),
+    Math.round((enemyMaxWar + 2) * Math.min(1, tune.warshipMult + 0.25)),
+  )));
 
   // réserve d'argent selon la personnalité (+ budget gelé pour une colonisation en cours,
   // + épargne pour le projet Colosse — uniquement quand l'armée tient debout)
@@ -197,7 +208,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   const reserve = (escalate ? 60 : 150 + persona.defense * 250) + colonizeReserve
     + (savingColossus ? 380 : 0) + (savingUsine ? 1500 : 0);
   let purchases = 0;
-  const canBuy = (price: number) => team.credits - price > reserve && purchases < (escalate ? 3 : 2);
+  const canBuy = (price: number) => team.credits - price > reserve && purchases < (escalate ? 4 : 3);
 
   if (miners.length < wantMiners && canBuy(SHIP_CLASSES.mineur.prix)) {
     if (!tryBuyShip(gs, teamId, 'mineur', false)) purchases++;
@@ -211,14 +222,18 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     if (!tryBuyShip(gs, teamId, 'cargo', false)) purchases++;
   }
   if (warships.length < wantWarships) {
-    const pool: ('chasseur' | 'bombardier' | 'croiseur')[] = ['chasseur'];
-    if (station.level >= 2) {
-      pool.push('bombardier');
-      if (gs.rng() < 0.5) pool.push('croiseur');
-    }
-    const cls = pool[Math.floor(gs.rng() * pool.length)];
-    if (canBuy(SHIP_CLASSES[cls].prix)) {
-      if (!tryBuyShip(gs, teamId, cls, false)) purchases++;
+    // gros déficit (l'ennemi a levé une armée) : jusqu'à 2 recrutements par réflexion
+    const rounds = wantWarships - warships.length > 5 ? 2 : 1;
+    for (let k = 0; k < rounds; k++) {
+      const pool: ('chasseur' | 'bombardier' | 'croiseur')[] = ['chasseur'];
+      if (station.level >= 2) {
+        pool.push('bombardier');
+        if (gs.rng() < 0.5) pool.push('croiseur');
+      }
+      const cls = pool[Math.floor(gs.rng() * pool.length)];
+      if (canBuy(SHIP_CLASSES[cls].prix)) {
+        if (!tryBuyShip(gs, teamId, cls, false)) purchases++;
+      }
     }
   }
 
@@ -366,6 +381,23 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     }
   }
 
+  // ---------- 6bis. FLOTTES DE PATROUILLE ----------
+  // une IA qui sait jouer fait ronde chez elle : 2-3 vaisseaux couvrent le territoire
+  // (bordure ou escorte des civils, au goût de la personnalité)
+  const patrolFleets = gs.fleets.filter(f2 => f2.team === teamId
+    && ['patrol_border', 'patrol_in', 'patrol_civil'].includes(f2.mission.kind));
+  if (patrolFleets.length === 0 && warships.length >= 5 && gs.rng() < 0.3) {
+    const idleNow = warships.filter(w => (w.order.kind === 'idle' || w.order.kind === 'guard') && w.fleetId == null);
+    if (idleNow.length >= 2) {
+      const grp = idleNow.slice(0, Math.min(3, idleNow.length));
+      const fleet = createFleet(gs, teamId, grp.map(s2 => s2.id), 'coin');
+      if (fleet) {
+        const kind = persona.raid > 0.5 ? 'patrol_civil' : persona.defense > 0.5 ? 'patrol_in' : 'patrol_border';
+        setFleetMission(gs, fleet, { kind });
+      }
+    }
+  }
+
   // ---------- 7. AMIRAL ----------
   // Un Colosse IA ne patrouille pas : il marche sur l'ennemi et vide ses armes.
   if (flagship && flagship.cls === 'colosse') {
@@ -400,6 +432,14 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 }
 
+/** Le joueur a-t-il de quoi encaisser ? (armée embryonnaire = pas encore prêt) */
+function playerNotReady(gs: GameState): boolean {
+  const t = gs.teams[gs.playerTeam];
+  if (!t?.alive || t.isAI) return false;
+  const war = gs.ships.filter(s => s.alive && s.team === gs.playerTeam && SHIP_CLASSES[s.cls].power > 5).length;
+  return war < 4;
+}
+
 /** Choisit une cible d'attaque : civils (raid), colonies/structures (harcèlement), stations (fin de partie). */
 function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minute: number, ignoreGrace = false): number | null {
   const tune = effectiveTune(gs);
@@ -423,9 +463,11 @@ function pickAttackTarget(gs: GameState, teamId: number, raidPref: number, minut
   if (dangerLab != null && dangerCount >= COLOSSE_LABS_REQUIRED - 1 && gs.rng() < 0.6) return dangerLab;
   if (dangerLab != null && dangerCount >= 2 && minute >= tune.harassMin && gs.rng() < 0.25) return dangerLab;
   if (minute < tune.harassMin) return null;
-  // période de grâce : l'IA laisse le joueur s'installer avant de le viser
+  // période de grâce : l'IA laisse le joueur s'installer avant de le viser —
+  // en FACILE, la grâce se prolonge tant que le joueur n'a pas d'armée digne de ce nom
+  const easyMercy = gs.cfg.difficulty === 'facile' && minute < 16 && playerNotReady(gs);
   const enemies = gs.activeTeams.filter(id => id !== teamId && gs.teams[id].alive && !areAllied(gs, teamId, id)
-    && !(id === gs.playerTeam && !gs.teams[id].isAI && !ignoreGrace && minute < tune.playerGraceMin));
+    && !(id === gs.playerTeam && !gs.teams[id].isAI && !ignoreGrace && (minute < tune.playerGraceMin || easyMercy)));
   if (enemies.length === 0) return null;
 
   // cible : 60 % l'équipe la plus faible (au score), 40 % la plus proche — évite

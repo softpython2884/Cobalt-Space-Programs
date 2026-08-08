@@ -349,10 +349,14 @@ export const DOCK_RANGE = 60;
 export const MINING_RANGE = 34;
 export const MINING_RATE = 6;              // unités/s
 export const DIFF_MULT = { facile: 0.5, normal: 1.0, difficile: 1.45 };
-// Réglages IA par difficulté : effectifs militaires, agressivité, délais de grâce
+// Réglages IA par difficulté : effectifs militaires, agressivité, délais de grâce.
+// Règles d'engagement contre le JOUEUR :
+//   facile    : 8 premières minutes tranquilles, et pas d'attaque tant qu'il n'est pas prêt
+//   normal    : les IA commencent à attaquer vers 4 min, mais sans acharnement (siège à 6 min)
+//   difficile : dès 4 min, AUCUNE restriction — si l'IA veut attaquer, elle attaque
 export interface DiffTuning { warshipMult: number; aggroMult: number; harassMin: number; siegeMin: number; thinkMult: number; lateRamp: number; playerGraceMin: number; buildMult: number }
 export const DIFF_TUNING: Record<'facile' | 'normal' | 'difficile', DiffTuning> = {
-  facile: { warshipMult: 0.55, aggroMult: 0.55, harassMin: 5, siegeMin: 12, thinkMult: 1.6, lateRamp: 0.04, playerGraceMin: 9, buildMult: 0.35 },
+  facile: { warshipMult: 0.55, aggroMult: 0.55, harassMin: 5, siegeMin: 12, thinkMult: 1.6, lateRamp: 0.04, playerGraceMin: 8, buildMult: 0.35 },
   normal: { warshipMult: 1.0, aggroMult: 1.0, harassMin: 1.5, siegeMin: 6, thinkMult: 1.0, lateRamp: 0.08, playerGraceMin: 4, buildMult: 1.0 },
-  difficile: { warshipMult: 1.25, aggroMult: 1.2, harassMin: 1.0, siegeMin: 5, thinkMult: 0.8, lateRamp: 0.1, playerGraceMin: 1.5, buildMult: 1.2 },
+  difficile: { warshipMult: 1.3, aggroMult: 1.25, harassMin: 1.5, siegeMin: 4, thinkMult: 0.8, lateRamp: 0.1, playerGraceMin: 4, buildMult: 1.2 },
 };

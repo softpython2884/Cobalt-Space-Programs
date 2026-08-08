@@ -1195,6 +1195,9 @@ function frame(now: number) {
   const aim = renderer.worldFromScreen(input.mouseX, input.mouseY);
   if (gs.status === 'playing' && !paused && introT <= 0) updateRadials(aim);
   else if (hud.radialKind) hud.hideRadial(true);
+  // solo : le rendu extrapole du reliquat de pas fixe (gomme l'effet « fantôme ») ;
+  // multi : l'estime avance déjà les positions à chaque frame, rien à ajouter
+  renderer.extrapolate = (!mpMode && !paused && gs.status === 'playing') ? accumulator : 0;
   renderer.update(gs, elapsed, visibleSet, aim);
   hud.update(gs, {
     tactical: renderer.isTactical(),
