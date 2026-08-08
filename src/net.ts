@@ -17,7 +17,10 @@ export class Net {
   names: Record<number, string> = {};
   lobby: LobbyInfo | null = null;
   private snap: GameState | null = null;
+  private lastGs: GameState | null = null;   // référence pour fusionner les instantanés légers
   private lastInputT = 0;
+  /** Jeton de session : permet de retrouver sa place après une coupure. */
+  token = '';
 
   onLobby: (l: LobbyInfo) => void = () => {};
   onStart: () => void = () => {};
@@ -61,11 +64,14 @@ export class Net {
         this.state = 'playing';
         this.myTeam = m.you;
         this.names = m.names ?? {};
+        this.lastGs = null;            // repart d'un instantané complet
         this.onStart();
         break;
       case 'snap': {
-        const gs = decodeSnap(m.s);
+        const gs = decodeSnap(m.s, this.lastGs, m.full !== false);
+        if (!gs) break;                // léger sans référence : on attend le complet
         gs.playerTeam = this.myTeam;   // chaque client voit la partie depuis son équipe
+        this.lastGs = gs;
         this.snap = gs;
         break;
       }
@@ -82,11 +88,13 @@ export class Net {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(o));
   }
 
-  quick(name: string, cfg: MatchConfig) { this.send({ t: 'quick', name, cfg }); }
-  create(name: string, cfg: MatchConfig, isPublic = false) { this.send({ t: 'create', name, cfg, public: isPublic }); }
-  join(code: string, name: string) { this.send({ t: 'join', code, name }); }
+  quick(name: string, cfg: MatchConfig) { this.send({ t: 'quick', name, cfg, token: this.token }); }
+  create(name: string, cfg: MatchConfig, isPublic = false) { this.send({ t: 'create', name, cfg, public: isPublic, token: this.token }); }
+  join(code: string, name: string) { this.send({ t: 'join', code, name, token: this.token }); }
+  /** Après une coupure : réclame sa place dans la partie en cours via le jeton. */
+  rejoin() { this.send({ t: 'rejoin', token: this.token }); }
   start() { this.send({ t: 'start' }); }
-  leave() { this.ws?.close(); this.state = 'off'; this.snap = null; }
+  leave() { this.ws?.close(); this.state = 'off'; this.snap = null; this.lastGs = null; }
 
   /** Entrées continues du vaisseau (30 Hz max). */
   sendInput(input: InputMsg) {

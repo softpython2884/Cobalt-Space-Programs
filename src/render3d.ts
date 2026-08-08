@@ -435,25 +435,26 @@ export class Renderer3D {
         light.position.set(0, 60, 0);
         g.add(light);
       });
-      if (gs.map.supernovaAt > 0) {
-        this.novaRing = new THREE.Mesh(
-          new THREE.RingGeometry(1, 1.06, 96),
-          new THREE.MeshBasicMaterial({ color: 0xff6b4b, transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
-        );
-        this.novaRing.rotation.x = -Math.PI / 2;
-        this.novaRing.visible = false;
-        this.scene.add(this.novaRing);
-        this.novaRing2 = new THREE.Mesh(
-          new THREE.RingGeometry(0.82, 1, 96),
-          new THREE.MeshBasicMaterial({ color: 0xffd84b, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
-        );
-        this.novaRing2.rotation.x = -Math.PI / 2;
-        this.novaRing2.visible = false;
-        this.scene.add(this.novaRing2);
-        this.novaLight = new THREE.PointLight(0xff4b2f, 0, 4000, 0.8);
-        this.novaLight.position.set(0, 120, 0);
-        this.scene.add(this.novaLight);
-      }
+      // les effets de supernova (double anneau + lumière) existent sur TOUTES les
+      // cartes : à 60 min, n'importe quelle étoile devient instable et explose —
+      // le spectacle doit être aussi beau que sur la supergéante rouge
+      this.novaRing = new THREE.Mesh(
+        new THREE.RingGeometry(1, 1.06, 96),
+        new THREE.MeshBasicMaterial({ color: 0xff6b4b, transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+      );
+      this.novaRing.rotation.x = -Math.PI / 2;
+      this.novaRing.visible = false;
+      this.scene.add(this.novaRing);
+      this.novaRing2 = new THREE.Mesh(
+        new THREE.RingGeometry(0.82, 1, 96),
+        new THREE.MeshBasicMaterial({ color: 0xffd84b, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+      );
+      this.novaRing2.rotation.x = -Math.PI / 2;
+      this.novaRing2.visible = false;
+      this.scene.add(this.novaRing2);
+      this.novaLight = new THREE.PointLight(0xff4b2f, 0, 4000, 0.8);
+      this.novaLight.position.set(0, 120, 0);
+      this.scene.add(this.novaLight);
     }
     gs.map.bodies.forEach((b, i) => {
       const g = this.starGroup.getObjectByName(`star${i}`);

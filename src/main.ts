@@ -63,6 +63,17 @@ let introT = 0;                    // intro hypersaut en cours (>0)
 let introStars: { a: number; r: number; sp: number }[] = [];
 // multijoueur : écart position affichée ↔ serveur, résorbé en douceur (anti-saccades)
 const mpErr = new Map<number, { x: number; y: number }>();
+// jeton de session multijoueur : survit au rechargement de la page et permet de
+// retrouver sa place dans une partie en cours après une coupure de connexion
+const mpToken = (() => {
+  let t = localStorage.getItem('cobalt.token');
+  if (!t) {
+    t = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    localStorage.setItem('cobalt.token', t);
+  }
+  return t;
+})();
+let rejoinTries = 0;
 
 window.addEventListener('resize', () => renderer?.resize());
 // l'audio ne peut démarrer qu'après un geste utilisateur
@@ -1261,6 +1272,7 @@ function leaveMp(msg = '') {
   net?.leave();
   net = null;
   mpMode = false;
+  rejoinTries = 0;
   mpErr.clear();
   gs = null;
   paused = false;
@@ -1272,13 +1284,43 @@ function leaveMp(msg = '') {
   if (msg) mpFooter(msg);
 }
 
+/** Coupure réseau : en pleine partie on tente la reconnexion, sinon retour menu. */
+function onNetClosed() {
+  if (mpMode && gs && gs.status === 'playing') attemptRejoin();
+  else leaveMp('Connexion au serveur perdue.');
+}
+
+/** Retente de récupérer sa place dans la partie (jeton de session) pendant ~15 s. */
+async function attemptRejoin() {
+  if (!mpMode) return;
+  if (rejoinTries >= 8) { leaveMp('Reconnexion impossible — partie quittée.'); return; }
+  rejoinTries++;
+  hud.flashHint(`Connexion perdue — reconnexion ${rejoinTries}/8…`);
+  await new Promise(r => window.setTimeout(r, 1600));
+  if (!mpMode) return;
+  net = new Net();
+  net.token = mpToken;
+  net.onLobby = info => hud.showLobby(info);
+  net.onStart = () => { rejoinTries = 0; startNetGame(); hud.flashHint('Reconnecté — bon retour, amiral !'); };
+  net.onError = msg => leaveMp(msg);
+  net.onHint = msg => hud.flashHint(msg);
+  net.onClosed = onNetClosed;
+  try {
+    await net.connect(autoAddr());
+    net.rejoin();
+  } catch {
+    attemptRejoin();
+  }
+}
+
 async function mpConnect(addr: string): Promise<boolean> {
   net = new Net();
+  net.token = mpToken;
   net.onLobby = info => hud.showLobby(info);
   net.onStart = () => startNetGame();
   net.onError = msg => mpFooter(msg);
   net.onHint = msg => hud.flashHint(msg);
-  net.onClosed = () => leaveMp('Connexion au serveur perdue.');
+  net.onClosed = onNetClosed;
   try {
     await net.connect(addr);
     return true;
@@ -1346,6 +1388,34 @@ hud.onMpJoin = async (name, code) => {
 };
 hud.onMpStart = () => net?.start();
 hud.onMpLeave = () => leaveMp();
+
+// ---- « X joueurs en ligne » sur l'écran d'accueil ----
+// Interroge le serveur multijoueur via une mini-connexion WebSocket éphémère
+// (même chemin que le jeu : passe les proxys HTTPS sans configuration en plus).
+function refreshOnlineCount() {
+  const tag = document.getElementById('menu-tagline');
+  const menuShown = !document.getElementById('menu')!.classList.contains('hidden');
+  if (!tag || !menuShown || mpMode) return;
+  try {
+    const probe = new WebSocket(autoAddr());
+    const kill = window.setTimeout(() => probe.close(), 4000);
+    probe.onopen = () => probe.send(JSON.stringify({ t: 'count' }));
+    probe.onmessage = ev => {
+      try {
+        const m = JSON.parse(String(ev.data));
+        if (m.t === 'count') {
+          const n = Math.max(0, Number(m.n) || 0);
+          tag.textContent = `Stratégie & action spatiale — ${n} joueur${n > 1 ? 's' : ''} en ligne`;
+        }
+      } catch { /* réponse illisible : devise générique conservée */ }
+      window.clearTimeout(kill);
+      probe.close();
+    };
+    probe.onerror = () => window.clearTimeout(kill);
+  } catch { /* serveur absent (dev local) : devise générique conservée */ }
+}
+refreshOnlineCount();
+window.setInterval(refreshOnlineCount, 45_000);
 
 hud.showMenu();
 requestAnimationFrame(frame);

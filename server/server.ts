@@ -29,6 +29,7 @@ interface Player {
   ws: WebSocket;
   name: string;
   team: number;
+  token: string;             // jeton de session : permet la reconnexion après coupure
   input: InputMsg;
   prevInput: InputMsg;
 }
@@ -38,11 +39,22 @@ interface Room {
   quick: boolean;            // partie rapide : départ automatique après décompte
   autoStartAt: number;       // horodatage du départ auto (0 = désactivé)
   players: Player[];
+  gone: { name: string; team: number; token: string }[];  // déconnectés en cours de partie
+  emptyAt: number;           // salon vidé en pleine partie : survit 3 min pour la reconnexion
   hostCfg: MatchConfig;
   gs: GameState | null;
   fxBuf: FxEvent[];
   loop: NodeJS.Timeout | null;
   snapAcc: number;
+  snapSeq: number;           // cadence complet/léger : 1 instantané complet sur 12 (~1 Hz)
+}
+
+const REJOIN_GRACE_MS = 180_000;
+
+function onlineCount(): number {
+  let n = 0;
+  for (const r of rooms.values()) n += r.players.length;
+  return n;
 }
 
 const rooms = new Map<string, Room>();
@@ -70,13 +82,13 @@ function broadcastLobby(room: Room) {
   });
 }
 
-function joinRoom(room: Room, ws: WebSocket, name: string) {
+function joinRoom(room: Room, ws: WebSocket, name: string, token: string) {
   if (room.gs) { send(ws, { t: 'err', msg: 'La partie a déjà commencé' }); return; }
   if (room.players.length >= 4) { send(ws, { t: 'err', msg: 'Salon complet' }); return; }
   const taken = new Set(room.players.map(p => p.team));
   let team = 0;
   while (taken.has(team)) team++;
-  room.players.push({ ws, name: name.slice(0, 16) || 'Amiral', team, input: emptyInput(), prevInput: emptyInput() });
+  room.players.push({ ws, name: name.slice(0, 16) || 'Amiral', team, token, input: emptyInput(), prevInput: emptyInput() });
   (ws as any).room = room;
   // partie rapide : décompte lancé dès le premier joueur, départ immédiat à 4
   if (room.quick) {
@@ -98,6 +110,7 @@ function startRoom(room: Room) {
   room.gs = newGame(cfg);
   room.fxBuf = [];
   room.snapAcc = 0;
+  room.snapSeq = -1;   // le tout premier instantané diffusé est COMPLET
   const names: Record<number, string> = {};
   for (const p of room.players) names[p.team] = p.name;
   room.players.forEach(p => send(p.ws, { t: 'start', you: p.team, names }));
@@ -122,14 +135,21 @@ function startRoom(room: Room) {
     room.snapAcc += 1;
     if (room.snapAcc >= Math.round(60 / SNAP_HZ)) {
       room.snapAcc = 0;
-      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200));
+      // 1 instantané COMPLET par seconde, le reste en LÉGER (sans le décor statique) :
+      // avec beaucoup de vaisseaux, le tuyau ne sature plus → fini les mini-freezes
+      room.snapSeq = (room.snapSeq + 1) % 12;
+      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200), room.snapSeq === 0);
       for (const p of room.players) {
-        if (p.ws.readyState === WebSocket.OPEN) p.ws.send(snap);
+        if (p.ws.readyState !== WebSocket.OPEN) continue;
+        // anti-rafale : si la connexion du joueur est déjà engorgée, on saute
+        // cet instantané pour lui plutôt que d'empiler du retard (cause des « rollbacks »)
+        if (p.ws.bufferedAmount > 250_000) continue;
+        p.ws.send(snap);
       }
     }
     if (gs.status === 'over') {
-      // dernier instantané puis fermeture douce du salon (retour lobby impossible v1)
-      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200));
+      // dernier instantané (complet) puis fermeture douce du salon
+      const snap = encodeSnap(gs, room.fxBuf.splice(0, 200), true);
       for (const p of room.players) if (p.ws.readyState === WebSocket.OPEN) p.ws.send(snap);
       clearInterval(room.loop!);
       room.loop = null;
@@ -228,6 +248,12 @@ const MIME: Record<string, string> = {
 
 const server = http.createServer((req, res) => {
   const urlPath = (req.url ?? '/').split('?')[0];
+  // compteur affiché sur l'écran d'accueil (« X joueurs en ligne »)
+  if (urlPath === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ online: onlineCount(), rooms: rooms.size }));
+    return;
+  }
   const file = path.join(DIST, urlPath === '/' ? 'index.html' : urlPath);
   if (fs.existsSync(DIST) && fs.existsSync(file) && fs.statSync(file).isFile()) {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream' });
@@ -249,22 +275,51 @@ wss.on('connection', ws => {
       case 'quick': {
         let target = [...rooms.values()].find(r => r.isPublic && !r.gs && r.players.length < 4);
         if (!target) {
-          target = { code: newCode(), isPublic: true, quick: true, autoStartAt: 0, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+          target = { code: newCode(), isPublic: true, quick: true, autoStartAt: 0, players: [], gone: [], emptyAt: 0, hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0, snapSeq: -1 };
           rooms.set(target.code, target);
         }
-        joinRoom(target, ws, m.name);
+        joinRoom(target, ws, m.name, String(m.token ?? ''));
         break;
       }
       case 'create': {
-        const r: Room = { code: newCode(), isPublic: !!m.public, quick: false, autoStartAt: 0, players: [], hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0 };
+        const r: Room = { code: newCode(), isPublic: !!m.public, quick: false, autoStartAt: 0, players: [], gone: [], emptyAt: 0, hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0, snapSeq: -1 };
         rooms.set(r.code, r);
-        joinRoom(r, ws, m.name);
+        joinRoom(r, ws, m.name, String(m.token ?? ''));
         break;
       }
       case 'join': {
         const r = rooms.get(String(m.code ?? '').toUpperCase());
         if (!r) { send(ws, { t: 'err', msg: 'Salon introuvable' }); return; }
-        joinRoom(r, ws, m.name);
+        joinRoom(r, ws, m.name, String(m.token ?? ''));
+        break;
+      }
+      case 'rejoin': {
+        // panne de connexion : le jeton de session redonne au joueur son équipe,
+        // que l'IA pilotait en intérim depuis la coupure
+        const token = String(m.token ?? '');
+        let target: Room | undefined, ghost: Room['gone'][number] | undefined;
+        if (token) {
+          for (const r of rooms.values()) {
+            const g = r.gone.find(g2 => g2.token === token);
+            if (g && r.gs && r.gs.status === 'playing') { target = r; ghost = g; break; }
+          }
+        }
+        if (!target || !ghost || !target.gs) { send(ws, { t: 'err', msg: 'Partie introuvable (terminée ou expirée)' }); return; }
+        target.gone = target.gone.filter(g2 => g2 !== ghost);
+        target.emptyAt = 0;
+        target.players.push({ ws, name: ghost.name, team: ghost.team, token, input: emptyInput(), prevInput: emptyInput() });
+        (ws as any).room = target;
+        const t2 = target.gs.teams[ghost.team];
+        if (t2) t2.isAI = false;
+        const names: Record<number, string> = {};
+        for (const pl of target.players) names[pl.team] = pl.name;
+        send(ws, { t: 'start', you: ghost.team, names });
+        ws.send(encodeSnap(target.gs, [], true));   // instantané complet immédiat
+        console.log(`reconnexion : ${ghost.name} retrouve le salon ${target.code}`);
+        break;
+      }
+      case 'count': {
+        send(ws, { t: 'count', n: onlineCount() });
         break;
       }
       case 'start': {
@@ -301,25 +356,38 @@ wss.on('connection', ws => {
     const room: Room | undefined = (ws as any).room;
     if (!room) return;
     const idx = room.players.findIndex(p => p.ws === ws);
-    if (idx >= 0) room.players.splice(idx, 1);
+    if (idx < 0) return;
+    const [p] = room.players.splice(idx, 1);
+    // en partie : l'IA prend le relais, mais la place reste réservée (jeton)
+    if (room.gs && room.gs.status === 'playing') {
+      room.gone.push({ name: p.name, team: p.team, token: p.token });
+      const t = room.gs.teams[p.team];
+      if (t) t.isAI = true;
+    }
     if (room.players.length === 0) {
-      if (room.loop) clearInterval(room.loop);
-      rooms.delete(room.code);
+      if (room.gs && room.gs.status === 'playing' && room.gone.length > 0) {
+        // tout le monde a décroché en pleine partie : le salon survit 3 min
+        // pour laisser une chance à la reconnexion
+        room.emptyAt = Date.now();
+      } else {
+        if (room.loop) clearInterval(room.loop);
+        rooms.delete(room.code);
+      }
     } else if (!room.gs) {
       broadcastLobby(room);
-    }
-    // en partie : l'équipe du déserteur passe à l'IA, la partie continue
-    if (room.gs && idx >= 0) {
-      // (le TeamState garde isAI=false ; on le confie à l'IA)
-      const t = room.gs.teams.find(t2 => !t2.isAI && !room.players.some(p => p.team === t2.id));
-      if (t) t.isAI = true;
     }
   });
 });
 
-// décompte des parties rapides : rafraîchit le lobby et lance à zéro
+// décompte des parties rapides : rafraîchit le lobby et lance à zéro ;
+// et purge des salons abandonnés dont le délai de reconnexion est écoulé
 setInterval(() => {
   for (const room of rooms.values()) {
+    if (room.emptyAt > 0 && Date.now() - room.emptyAt > REJOIN_GRACE_MS) {
+      if (room.loop) clearInterval(room.loop);
+      rooms.delete(room.code);
+      continue;
+    }
     if (room.gs || !room.quick || room.players.length === 0) continue;
     if (room.autoStartAt > 0 && Date.now() >= room.autoStartAt) startRoom(room);
     else broadcastLobby(room);

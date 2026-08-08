@@ -90,24 +90,27 @@ export function simTick(gs: GameState, dt: number) {
       addLog(gs, 'Le pacte est arrivé à son terme.', '#8fa8c8');
     } else if (age > ALLIANCE_DURATION - 120 && !gs.allianceSince[key + ':warn']) {
       gs.allianceSince[key + ':warn'] = 1;
-      if (a2 === gs.playerTeam || b2 === gs.playerTeam) {
+      // « humain » = tout joueur réel, pas seulement l'hôte local (multi : plusieurs humains !)
+      const aHuman = !gs.teams[a2].isAI, bHuman = !gs.teams[b2].isAI;
+      if (aHuman || bHuman) {
         setAlert(gs, 'ALLIANCE EXPIRE DANS 2 MIN — RENOUVELEZ-LA (J)', 5, '#ffd84b');
       }
-      // deux IA alliées décident elles-mêmes du renouvellement
-      if (a2 !== gs.playerTeam && b2 !== gs.playerTeam) {
+      if (!aHuman && !bHuman) {
+        // deux IA alliées décident elles-mêmes du renouvellement
         if (aiAcceptsAlliance(gs, a2, b2) && aiAcceptsAlliance(gs, b2, a2)) {
           gs.allianceSince[key] = gs.t;
           delete gs.allianceSince[key + ':warn'];
         }
-      } else {
-        // l'IA propose le renouvellement au joueur
-        const ai = a2 === gs.playerTeam ? b2 : a2;
-        if (gs.teams[ai]?.isAI && aiAcceptsAlliance(gs, ai, gs.playerTeam)
-          && !offerIsMuted(gs, ai, gs.playerTeam, 'alliance')) {
-          gs.diploOffers.push({ id: gs.nextId++, from: ai, to: gs.playerTeam, type: 'alliance', expiresT: gs.t + 110 });
+      } else if (aHuman !== bHuman) {
+        // l'IA propose le renouvellement à l'humain — jamais l'inverse
+        const ai = aHuman ? b2 : a2;
+        const hu = aHuman ? a2 : b2;
+        if (aiAcceptsAlliance(gs, ai, hu) && !offerIsMuted(gs, ai, hu, 'alliance')) {
+          gs.diploOffers.push({ id: gs.nextId++, from: ai, to: hu, type: 'alliance', expiresT: gs.t + 110 });
           addLog(gs, `${gs.teams[ai].name} souhaite renouveler votre alliance.`, gs.teams[ai].cssColor);
         }
       }
+      // humain + humain : à eux de se re-proposer l'alliance (touche J)
     }
   }
 
@@ -115,7 +118,7 @@ export function simTick(gs: GameState, dt: number) {
   gs.diploOffers = gs.diploOffers.filter(o => {
     if (!gs.teams[o.from]?.alive || !gs.teams[o.to]?.alive) return false;
     if (o.expiresT <= gs.t) {
-      if (o.to === gs.playerTeam) addLog(gs, `L'offre de ${gs.teams[o.from].name} a expiré.`, '#8fa8c8');
+      if (!gs.teams[o.to].isAI) addLog(gs, `L'offre de ${gs.teams[o.from].name} a expiré.`, '#8fa8c8');
       return false;
     }
     return true;
@@ -143,6 +146,9 @@ export function simTick(gs: GameState, dt: number) {
   updateStarHazards(gs, dt);
   updateRespawns(gs, dt);
   updatePirateTimer(gs, dt);
+  // réacteur du Colosse : ILLIMITÉ — le plein est refait en fin de tick pour que
+  // tout (salve, Brise-Monde, saut, recharge bouclier, EMP…) le retrouve à bloc
+  for (const s of gs.ships) if (s.alive && s.cls === 'colosse') s.energy = s.energyMax;
   cleanup(gs);
   checkVictory(gs);
 }
@@ -2444,6 +2450,9 @@ function updateColossus(gs: GameState, dt: number) {
   gs.colossusBeams.length = 0;
   for (const c of gs.ships) {
     if (!c.alive || c.cls !== 'colosse') continue;
+    // le réacteur du Colosse est ILLIMITÉ : rayons, salve, Brise-Monde et saut
+    // ne manquent jamais d'énergie — seuls les temps de recharge cadencent le monstre
+    c.energy = c.energyMax;
     // cibles : jusqu'à 5 VAISSEAUX ennemis distincts à portée (les rayons anti-vaisseaux
     // ne mordent pas sur les structures — salve et Brise-Monde s'en chargent)
     const targets: Ship[] = [];
@@ -2456,13 +2465,11 @@ function updateColossus(gs: GameState, dt: number) {
       targets.push(t);
     }
     for (const t of targets) {
-      if (c.energy < 10) break;
       const key = `${c.id}:${t.id}`;
       const heat = Math.min(4, (rayHeat.get(key) ?? 0) + dt);   // plus c'est long, plus ça brûle
       rayHeat.set(key, heat);
       const dmg = (7 + heat * 5) * dt;
       applyDamage(gs, t, dmg, c.team);
-      c.energy = Math.max(0, c.energy - (4 + heat * 2) * dt);   // des rayons voraces en énergie
       // faisceau continu : le rendu lit cet état à chaque frame
       gs.colossusBeams.push({ x1: c.pos.x, y1: c.pos.y, x2: t.pos.x, y2: t.pos.y, heat });
     }
@@ -2704,7 +2711,8 @@ export function aiAcceptsAlliance(gs: GameState, aiTeam: number, other: number):
   return gs.rng() < Math.max(0.05, friendly);
 }
 
-/** Propose une alliance. Vers le joueur : crée une offre ; entre IA : résolution immédiate. */
+/** Propose une alliance. Vers un HUMAIN (n'importe lequel, pas juste l'hôte) : crée une
+ *  offre qu'il devra accepter lui-même ; vers une IA : résolution immédiate. */
 export function proposeAlliance(gs: GameState, from: number, to: number): string | null {
   if (from === to || !gs.teams[to]?.alive || !gs.teams[from]?.alive) return 'Équipe invalide';
   // anti-spam : après un refus, impossible de redemander à la même équipe pendant 90 s
@@ -2725,7 +2733,7 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
   }
   if (gs.diploOffers.some(o => o.type === 'alliance'
     && ((o.from === from && o.to === to) || (o.from === to && o.to === from)))) return 'Offre déjà en attente';
-  if (to === gs.playerTeam && !gs.teams[to].isAI) {
+  if (!gs.teams[to].isAI) {
     if (offerIsMuted(gs, from, to, 'alliance')) return null;
     gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'alliance', expiresT: gs.t + 25 });
     addLog(gs, `${gs.teams[from].name} vous propose une alliance.`, gs.teams[from].cssColor);
@@ -2735,7 +2743,7 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
     formAlliance(gs, from, to);
   } else {
     gs.offerMuted[`ask:${from}:${to}`] = gs.t + 90;
-    if (from === gs.playerTeam) addLog(gs, `${gs.teams[to].name} refuse votre alliance (réessai dans 90 s).`, gs.teams[to].cssColor);
+    if (!gs.teams[from].isAI) addLog(gs, `${gs.teams[to].name} refuse votre alliance (réessai dans 90 s).`, gs.teams[to].cssColor);
   }
   return null;
 }
@@ -2744,7 +2752,7 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
 export function requestFocus(gs: GameState, from: number, to: number, target: number): string | null {
   if (!areAllied(gs, from, to)) return 'Vous devez être alliés';
   if (!gs.teams[target]?.alive || areAllied(gs, to, target) || areAllied(gs, from, target)) return 'Cible invalide';
-  if (to === gs.playerTeam && !gs.teams[to].isAI) {
+  if (!gs.teams[to].isAI) {
     if (gs.diploOffers.some(o => o.type === 'target' && o.from === from && o.to === to)) return null;
     if (offerIsMuted(gs, from, to, 'target')) return null;
     gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'target', target, expiresT: gs.t + 25 });
@@ -2756,7 +2764,7 @@ export function requestFocus(gs: GameState, from: number, to: number, target: nu
     gs.focusTargets[to] = target;
     gs.focusTargets[from] = target;
     addLog(gs, `${gs.teams[to].name} accepte de cibler ${gs.teams[target].name}.`, '#6dff8a');
-  } else if (from === gs.playerTeam) {
+  } else if (!gs.teams[from].isAI) {
     addLog(gs, `${gs.teams[to].name} décline votre requête.`, gs.teams[to].cssColor);
   }
   return null;
@@ -2767,7 +2775,7 @@ export function requestDefend(gs: GameState, from: number, to: number): string |
   if (!areAllied(gs, from, to)) return 'Vous devez être alliés';
   const fromStation = structById(gs, gs.teams[from].stationId);
   if (!fromStation) return 'Votre station est détruite';
-  if (to === gs.playerTeam && !gs.teams[to].isAI) {
+  if (!gs.teams[to].isAI) {
     if (!gs.diploOffers.some(o => o.type === 'defend' && o.from === from && o.to === to)
       && !offerIsMuted(gs, from, to, 'defend')) {
       gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'defend', expiresT: gs.t + 30 });
@@ -2782,7 +2790,7 @@ export function requestDefend(gs: GameState, from: number, to: number): string |
     const sent = warships.slice(0, Math.max(2, Math.floor(warships.length / 2)));
     for (const w of sent) w.order = { kind: 'guard', pos: add(fromStation.pos, fromAngle(gs.rng() * Math.PI * 2, 80)) };
     addLog(gs, `${gs.teams[to].name} envoie ${sent.length} vaisseaux défendre votre base.`, '#6dff8a');
-  } else if (from === gs.playerTeam) {
+  } else if (!gs.teams[from].isAI) {
     addLog(gs, `${gs.teams[to].name} ne peut pas envoyer d'aide pour l'instant.`, gs.teams[to].cssColor);
   }
   return null;

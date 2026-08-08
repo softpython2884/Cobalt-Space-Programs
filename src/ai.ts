@@ -397,7 +397,8 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     if (!commonFoe || (pScore > myScore * 1.45 && gs.rng() < 0.25 + persona.aggression * 0.4)) {
       breakAlliance(gs, teamId, partner);
       // la trahison s'annonce en transmission radio, pas en petit caractère
-      if (partner === gs.playerTeam) {
+      // (tout humain trahi est prévenu — en multi il n'y a pas que l'hôte !)
+      if (!gs.teams[partner].isAI) {
         setAlert(gs, `${team.name.toUpperCase()} ROMPT VOTRE ALLIANCE`, 5.5, '#ff8c42');
       }
     }
