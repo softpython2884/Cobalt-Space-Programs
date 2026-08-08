@@ -8,6 +8,11 @@ export const TEAM_DEFS: TeamDef[] = [
   { name: 'Bleu', color: 0x4b8bff, cssColor: '#4b8bff' },
   { name: 'Vert', color: 0x4bff7a, cssColor: '#4bff7a' },
   { name: 'Jaune', color: 0xffd84b, cssColor: '#ffd84b' },
+  { name: 'Rose', color: 0xff6bd6, cssColor: '#ff6bd6' },
+  { name: 'Cyan', color: 0x4be8e8, cssColor: '#4be8e8' },
+  { name: 'Violet', color: 0xa96bff, cssColor: '#a96bff' },
+  { name: 'Orange', color: 0xff9440, cssColor: '#ff9440' },
+  { name: 'Blanc', color: 0xe8ecf2, cssColor: '#e8ecf2' },
 ];
 export const PIRATE_DEF: TeamDef = { name: 'Pirates', color: 0x9aa0a8, cssColor: '#9aa0a8' };
 export const NEUTRAL_CSS = '#8a93a0';
@@ -109,6 +114,16 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     prix: 400, unlockLevel: 1, power: 2, civil: true, canMine: false, canColonize: false,
     desc: 'Routes commerciales vers vos colonies.',
   },
+  convoi: {
+    // fusion automatique de 5 cargos : même travail, 5× la soute, 1 seule entité
+    // (anti-lag : 200 cargos deviennent 40 convois, la sim et le réseau respirent)
+    id: 'convoi', nom: 'Grand convoi', role: 'Commerce lourd',
+    hull: 520, shield: 240, energy: 100, speed: 50, accel: 70, turn: 2.4,
+    radius: 13, sensor: 220, cargo: 750,
+    weapons: [], secondarySlots: 0, mineType: null, mineMax: 0,
+    prix: 2000, unlockLevel: 99, power: 5, civil: true, canMine: false, canColonize: false,
+    desc: '5 cargos soudés en un seul mastodonte marchand.',
+  },
   transporteur: {
     id: 'transporteur', nom: 'Transporteur', role: 'Colonisation',
     hull: 130, shield: 60, energy: 120, speed: 52, accel: 80, turn: 2.8,
@@ -198,11 +213,12 @@ export const PASSIVE_INCOME_PERIOD = 10;
 export const COLONIZE_COST = 300;
 export const COLONIZE_TIME = 8;
 export const KILL_BOUNTY: Record<ShipClassId, number> = {
-  corvette: 40, chasseur: 45, bombardier: 80, croiseur: 150, mineur: 35, cargo: 50, transporteur: 55, raider: 60, colosse: 800,
+  corvette: 40, chasseur: 45, bombardier: 80, croiseur: 150, mineur: 35, cargo: 50, convoi: 250, transporteur: 55, raider: 60, colosse: 800,
 };
 export const WRECK_VALUE: Record<ShipClassId, number> = {
-  corvette: 35, chasseur: 30, bombardier: 60, croiseur: 120, mineur: 45, cargo: 70, transporteur: 55, raider: 40, colosse: 400,
+  corvette: 35, chasseur: 30, bombardier: 60, croiseur: 120, mineur: 45, cargo: 70, convoi: 350, transporteur: 55, raider: 40, colosse: 400,
 };
+export const CONVOY_MERGE_N = 5;           // 5 cargos libres → 1 Grand convoi
 export const MINE_RESTOCK_PRICE = 30;
 export const TRADE_PROFIT = 90;           // par livraison cargo → planète → retour
 
@@ -346,7 +362,8 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeDef> = {
   desert: { id: 'desert', nom: 'Désertique', colors: [0xd8b878, 0xc89858, 0xe8d8a8] },
 };
 export const PLANET_TYPE_LIST: PlanetType[] = ['tellurique', 'glace', 'lave', 'gazeuse', 'oceanique', 'desert'];
-export const PLANET_NAMES = ['Kepler', 'Thessia', 'Vorash', 'Ilos', 'Rannoch', 'Eden', 'Tuchanka', 'Noveria', 'Feros', 'Virmire', 'Horizon', 'Elysium', 'Terra Nova', 'Onyx', 'Cyrene'];
+export const PLANET_NAMES = ['Kepler', 'Thessia', 'Vorash', 'Ilos', 'Rannoch', 'Eden', 'Tuchanka', 'Noveria', 'Feros', 'Virmire', 'Horizon', 'Elysium', 'Terra Nova', 'Onyx', 'Cyrene',
+  'Aldebar', 'Nyx', 'Solstice', 'Vesper', 'Corolis', 'Ashfall', 'Meridian', 'Zenith'];
 
 // ---------- Divers gameplay ----------
 export const RESPAWN_DELAY = 4;

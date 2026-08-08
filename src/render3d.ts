@@ -39,6 +39,7 @@ const CLASS_SHAPE: Record<ShipClassId, string> = {
   croiseur: 'penta',      // pentagone pointé vers l'avant
   mineur: 'losange',      // losange
   cargo: 'hole',          // petit carré troué (le grand carré = bâtiments)
+  convoi: 'hole',         // même famille que le cargo, sprite plus imposant
   colosse: 'octa',        // le monstre
   transporteur: 'house',  // pentagone maison
   raider: 'tri_rect',     // triangle rectangle
@@ -72,6 +73,7 @@ export class Renderer3D {
   private novaRing: THREE.Mesh | null = null;
   private novaRing2: THREE.Mesh | null = null;
   private novaLight: THREE.PointLight | null = null;
+  private worldBorder!: THREE.Mesh;
   private shakeT = 0;
   private strikeBeams = new Map<number, THREE.Mesh>();
 
@@ -112,13 +114,13 @@ export class Renderer3D {
     this.grid.visible = false;
     this.scene.add(this.grid);
 
-    // limite du monde
-    const border = new THREE.Mesh(
+    // limite du monde (redimensionnée par syncStar selon map.worldR)
+    this.worldBorder = new THREE.Mesh(
       new THREE.RingGeometry(WORLD_R, WORLD_R + 14, 96),
       new THREE.MeshBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.16, side: THREE.DoubleSide }),
     );
-    border.rotation.x = -Math.PI / 2;
-    this.scene.add(border);
+    this.worldBorder.rotation.x = -Math.PI / 2;
+    this.scene.add(this.worldBorder);
 
     this.scene.add(this.starGroup);
     this.scene.add(this.aimGroup);
@@ -427,6 +429,10 @@ export class Renderer3D {
   private syncStar(gs: GameState, dt: number) {
     if (!this.starBuilt) {
       this.starBuilt = true;
+      // grandes cartes (6-9 joueurs) : bordure et grille suivent le rayon réel
+      const wf = (gs.map.worldR ?? WORLD_R) / WORLD_R;
+      this.worldBorder.scale.setScalar(wf);
+      this.grid.scale.setScalar(wf);
       gs.map.bodies.forEach((b, i) => {
         const g = buildStarBody(gs.map.starType, b.radius, b.color);
         g.name = `star${i}`;

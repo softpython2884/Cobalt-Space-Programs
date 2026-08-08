@@ -18,6 +18,7 @@ import {
   STATION_UPGRADES, STATION_SALVO_SIZE, STATION_SALVO_CD, STATION_BEAM_RANGE, AEGIS_DUR, AEGIS_CD,
   OUTPOST_UPGRADE_PRICE, OUTPOST_MAX_LEVEL, TRADE_HUB_MULT, TRADE_HUB_OWNER_CUT,
   BUREAU_INCOME, BUREAU_INCOME_PERIOD, GARRISON_BY_LEVEL, GARRISON_RESPAWN,
+  CONVOY_MERGE_N,
 } from './data';
 import {
   makeRoid, makeCloud,
@@ -25,7 +26,7 @@ import {
   isEnemy, nearestShip, nearestStruct, nearestRoid, nearestCloud, canDetect, cargoTotal, addCargo,
   setAllianceCheck,
 } from './entities';
-import { removeFromFleet, formationWorldPos, fleetShips } from './orders';
+import { removeFromFleet, formationWorldPos, fleetShips, createFleet, setFleetMission } from './orders';
 import { PERSONAS } from './data';
 import { thinkTeams, thinkPirates, spawnPirateRaid } from './ai';
 
@@ -138,6 +139,7 @@ export function simTick(gs: GameState, dt: number) {
 
   updateStructures(gs, dt);
   updateGarrisons(gs, dt);
+  updateConvoys(gs, dt);
   updatePlanets(gs, dt);
   updateProjectiles(gs, dt);
   updateMines(gs, dt);
@@ -189,8 +191,8 @@ function updateMeteors(gs: GameState, dt: number) {
       gs.meteorT = 280 + gs.rng() * 60;
       for (let i = 0; i < 3; i++) {
         const edge = gs.rng() * Math.PI * 2;
-        const from = fromAngle(edge, WORLD_R * 1.05);
-        const target = fromAngle(gs.rng() * Math.PI * 2, gs.map.killRadius + 200 + gs.rng() * (WORLD_R * 0.7));
+        const from = fromAngle(edge, gs.map.worldR * 1.05);
+        const target = fromAngle(gs.rng() * Math.PI * 2, gs.map.killRadius + 200 + gs.rng() * (gs.map.worldR * 0.7));
         const m: Meteor = {
           id: gs.nextId++, kind: 'meteor',
           pos: from, vel: scale(norm(sub(target, from)), 190 + gs.rng() * 50),
@@ -224,7 +226,7 @@ function updateMeteors(gs: GameState, dt: number) {
       if (gs.rng() < 0.4) {
         makeCloud(gs, add(m.pos, fromAngle(gs.rng() * Math.PI * 2, 20)), 24 + gs.rng() * 14, 8 + Math.floor(gs.rng() * 40));
       }
-    } else if (len(m.pos) > WORLD_R * 1.2) {
+    } else if (len(m.pos) > gs.map.worldR * 1.2) {
       m.alive = false;
     }
   }
@@ -238,7 +240,7 @@ function updateStorms(gs: GameState, dt: number) {
   gs.stormT -= dt;
   if (gs.stormT <= 0 && gs.storms.filter(st => st.alive).length < 3) {
     gs.stormT = 90 + gs.rng() * 90;
-    const pos = fromAngle(gs.rng() * Math.PI * 2, WORLD_R * (0.35 + gs.rng() * 0.5));
+    const pos = fromAngle(gs.rng() * Math.PI * 2, gs.map.worldR * (0.35 + gs.rng() * 0.5));
     const storm: StormCloud = {
       id: gs.nextId++, kind: 'storm',
       pos, vel: fromAngle(gs.rng() * Math.PI * 2, 1.6),
@@ -255,7 +257,7 @@ function updateStorms(gs: GameState, dt: number) {
     if (!st.alive) continue;
     // dérive lente, rebond sur la bordure du monde
     st.pos = add(st.pos, scale(st.vel, dt));
-    if (len(st.pos) > WORLD_R * 0.92) st.vel = scale(norm(st.pos), -1.6);
+    if (len(st.pos) > gs.map.worldR * 0.92) st.vel = scale(norm(st.pos), -1.6);
 
     st.boltT -= dt;
     if (st.boltT <= 0) {
@@ -384,7 +386,7 @@ function updateStarHazards(gs: GameState, dt: number) {
     for (const st of gs.structures) if (st.alive && len(st.pos) < r) destroyStructure(gs, st, NO_TEAM);
     for (const p of gs.planets) if (p.alive && len(p.pos) < r) { p.alive = false; gs.fx.push({ type: 'explosion', pos: p.pos, size: p.radius * 2 }); }
     for (const rd of gs.roids) if (rd.alive && len(rd.pos) < r) rd.alive = false;
-    if (r > WORLD_R * 1.3) endBySupernova(gs);
+    if (r > gs.map.worldR * 1.3) endBySupernova(gs);
   }
 }
 
@@ -932,7 +934,7 @@ function integrate(gs: GameState, s: Ship, dt: number) {
 
   // limites du monde
   const d = len(s.pos);
-  if (d > WORLD_R) s.pos = scale(s.pos, WORLD_R / d);
+  if (d > gs.map.worldR) s.pos = scale(s.pos, gs.map.worldR / d);
 
   // séparation douce entre vaisseaux proches (anti-empilement)
   for (const o of gs.ships) {
@@ -1759,11 +1761,58 @@ export function tryBuyShip(gs: GameState, teamId: number, cls: ShipClassId, pilo
     addLog(gs, `${team.name} pilote maintenant : ${def.nom}.`, team.cssColor);
   } else {
     // vaisseau recruté : ordres par défaut selon la classe
-    if (cls === 'mineur') ship.order = { kind: 'mine' };
-    else if (cls === 'cargo') ship.order = { kind: 'trade' };
+    if (cls === 'mineur') {
+      ship.order = { kind: 'mine' };
+      // un mineur fraîchement livré se met au travail TOUT SEUL : minage auto +
+      // récupération d'épaves. Il rejoint la flotte minière existante ou en fonde
+      // une — le joueur peut la réaffecter n'importe quand.
+      if (!team.isAI) {
+        const mf = gs.fleets.find(f => f.team === teamId && f.mission.kind === 'mine_auto');
+        if (mf) {
+          mf.members.push(ship.id);
+          ship.fleetId = mf.id;
+        } else {
+          const f = createFleet(gs, teamId, [ship.id]);
+          if (f) setFleetMission(gs, f, { kind: 'mine_auto' });
+        }
+      }
+    } else if (cls === 'cargo') ship.order = { kind: 'trade' };
     else ship.order = { kind: 'guard', pos: { ...st.pos } };
   }
   return null;
+}
+
+// ================================================================
+//  GRANDS CONVOIS — 5 cargos libres fusionnent en un seul mastodonte
+//  (anti-lag : le cargo est LA classe spammée ; 200 entités deviennent 40,
+//  la simulation et le réseau respirent, le commerce rapporte pareil)
+// ================================================================
+function updateConvoys(gs: GameState, dt: number) {
+  // une passe toutes les ~3 s, sans état module (déterminisme et multi-salons)
+  if (Math.floor(gs.t / 3) === Math.floor((gs.t - dt) / 3)) return;
+  for (const teamId of gs.activeTeams) {
+    const team = gs.teams[teamId];
+    if (!team.alive) continue;
+    const loose = gs.ships.filter(s => s.alive && s.team === teamId && s.cls === 'cargo'
+      && !s.isFlagship && s.fleetId == null);
+    if (loose.length < CONVOY_MERGE_N) continue;
+    // les 5 plus proches de la station se regroupent (rendez-vous naturel)
+    const st = structById(gs, team.stationId);
+    const home = st?.pos ?? loose[0].pos;
+    const five = [...loose].sort((a, b) => dist(a.pos, home) - dist(b.pos, home)).slice(0, CONVOY_MERGE_N);
+    const at = { ...five[0].pos };
+    const convoi = makeShip(gs, teamId, 'convoi', at, five[0].heading);
+    for (const c of five) {
+      convoi.cargo.roche += c.cargo.roche;
+      convoi.cargo.minerai += c.cargo.minerai;
+      convoi.cargo.gaz += c.cargo.gaz;
+      c.alive = false;
+      gs.fx.push({ type: 'saut', pos: { ...c.pos } });
+    }
+    convoi.order = { kind: 'trade' };
+    gs.fx.push({ type: 'onde', pos: at, size: 40, color: 0xffd27a });
+    if (!team.isAI) addLog(gs, `${CONVOY_MERGE_N} cargos fusionnent : GRAND CONVOI opérationnel (soute ×${CONVOY_MERGE_N}).`, team.cssColor);
+  }
 }
 
 export function tryBuyUpgrade(gs: GameState, teamId: number, upgradeId: string): string | null {
@@ -2369,7 +2418,7 @@ function updateFleetMissions(gs: GameState, dt: number) {
         wp = add(h.pos, fromAngle(gs.rng() * Math.PI * 2, 30 + gs.rng() * h.r * 0.5));
       }
       const dW = len(wp);
-      if (dW > WORLD_R * 0.98) wp = scale(wp, WORLD_R * 0.98 / dW);
+      if (dW > gs.map.worldR * 0.98) wp = scale(wp, gs.map.worldR * 0.98 / dW);
       lead.order = { kind: 'move', pos: wp };
       for (const id of f.members) {
         const mm = shipById(gs, id);
@@ -2737,6 +2786,8 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
     if (offerIsMuted(gs, from, to, 'alliance')) return null;
     gs.diploOffers.push({ id: gs.nextId++, from, to, type: 'alliance', expiresT: gs.t + 25 });
     addLog(gs, `${gs.teams[from].name} vous propose une alliance.`, gs.teams[from].cssColor);
+    // la demande passe aussi en TRANSMISSION radio, pas seulement en petit journal
+    setAlert(gs, `${gs.teams[from].name.toUpperCase()} PROPOSE UNE ALLIANCE`, 5, gs.teams[from].cssColor);
     return null;
   }
   if (aiAcceptsAlliance(gs, to, from)) {

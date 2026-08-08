@@ -43,9 +43,10 @@ export const ri = (rng: RNG, a: number, b: number) => Math.floor(rr(rng, a, b + 
 export const pick = <T,>(rng: RNG, arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)];
 
 // ---------- Constantes ----------
-export const WORLD_R = 1500;            // rayon jouable de la carte
+export const WORLD_R = 1500;            // rayon jouable de la carte à 4 équipes (base ; voir MapInfo.worldR)
 export const SIM_DT = 1 / 60;
-export const PIRATE_TEAM = 4;
+export const MAX_TEAMS = 9;             // jusqu'à 9 joueurs (rose, cyan, violet… incluses)
+export const PIRATE_TEAM = 99;          // hors de la plage des équipes jouables (0..8)
 export const NO_TEAM = -1;
 export const TACTICAL_ZOOM = 260;       // hauteur caméra à partir de laquelle on passe en vue tactique
 
@@ -53,7 +54,7 @@ export type Res = 'roche' | 'minerai' | 'gaz';
 export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 
 // ---------- Identifiants de données (définis dans data.ts) ----------
-export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider' | 'colosse';
+export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'convoi' | 'transporteur' | 'raider' | 'colosse';
 export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile' | 'salve' | 'brise_monde'
   | 'blast_vert' | 'missile_triple' | 'canon_lourd_auto';
 export type MineType = 'frag' | 'emp' | 'aimant';
@@ -266,8 +267,9 @@ export function areAllied(gs: GameState, a: number, b: number): boolean {
 // ---------- Config de partie ----------
 export interface MatchConfig {
   seed: number;
-  playerColorIdx: number;      // 0 rouge, 1 bleu, 2 vert, 3 jaune
-  aiCount: number;             // 1..3
+  playerColorIdx: number;      // 0 rouge, 1 bleu, 2 vert, 3 jaune, 4 rose, 5 cyan, 6 violet, 7 orange, 8 blanc
+  aiCount: number;             // (héritage) IA de remplissage si teamCount absent
+  teamCount?: number;          // nombre TOTAL d'équipes (humains + IA), 2..9 — prioritaire sur aiCount
   personaChoice: PersonaId | 'aleatoire';
   starChoice: StarType | 'aleatoire';
   difficulty: 'facile' | 'normal' | 'difficile';
@@ -281,6 +283,7 @@ export interface MapInfo {
   starType: StarType;
   starName: string;
   bodies: StarBody[];        // 1 à 3 astres centraux
+  worldR: number;            // rayon jouable RÉEL (grandit avec le nombre d'équipes)
   killRadius: number;        // rayon de destruction autour du centre
   supernovaAt: number;       // temps sim de la supernova (-1 sinon)
   neutronPeriod: number;     // période d'impulsion EMP (-1 sinon)

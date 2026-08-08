@@ -190,6 +190,33 @@ export function buildShip(cls: ShipClassId, teamColor: number): THREE.Group {
       g.add(engineFlame(0xffd27a, -7.4, -0.9, 0.75));
       break;
     }
+    case 'convoi': {
+      // GRAND CONVOI : cinq cargos soudés — double épine dorsale, murs de
+      // conteneurs sur trois rangées, pont de commandement surélevé
+      g.add(box(3.4, 3, 3.4, light, 7.4));                      // château avant
+      const vitre = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.4, 2.6),
+        mat(0x9fdcff, { emissive: 0x2a6f8f, emissiveIntensity: 0.6 }));
+      vitre.position.set(9.1, 0.6, 0);
+      g.add(vitre);
+      g.add(box(2.6, 1, 4.6, accent, 7, -1.6, 0));              // jupe avant
+      for (const y of [1.4, -1.4]) {                            // double épine dorsale
+        g.add(box(16, 1, 1.2, dark, -1.4, y, 0));
+      }
+      const colors = [0xc86b4b, 0x6bc8a0, 0xc8b84b, 0x7a8ac8, 0xb06b9a, 0x6b9ac8];
+      for (let i = 0; i < 3; i++) {                             // 3 rangées × 2 côtés + toit
+        for (const side of [2.1, -2.1, 0]) {
+          const k = (i * 3 + (side > 0 ? 0 : side < 0 ? 1 : 2)) % colors.length;
+          g.add(box(4.4, 2.4, 2.6, mat(colors[k], { metalness: 0.1 }), 3 - i * 5, side === 0 ? 1.9 : 0, side));
+        }
+      }
+      g.add(box(2.4, 3.4, 4.4, mid, -9.4));                     // bloc moteur massif
+      for (const z of [1.4, -1.4]) {
+        g.add(cyl(0.8, 1.05, 1.6, 6, dark, -10.9, 0.7, z));
+        g.add(engineFlame(0xffd27a, -11.9, z, 0.9));
+      }
+      g.add(box(1.8, 0.8, 6.2, accent, -8.9, 2.1, 0));          // ailerons d'équipe
+      break;
+    }
     case 'transporteur': {
       // vaisseau-colonie : coque fuselée en capsule + grand dôme d'habitat vitré
       const hull = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 1.9, 7.5, 8), mid);

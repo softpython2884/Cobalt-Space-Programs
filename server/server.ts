@@ -19,7 +19,7 @@ import {
   takeControlNearest, dropMine, flagshipOf,
   proposeAlliance, breakAlliance, requestFocus, requestDefend, acceptOffer, refuseOffer,
 } from '../src/sim';
-import { issueOrder, createFleet, disbandFleet, setFleetMission, fleetShips } from '../src/orders';
+import { issueOrder, createFleet, disbandFleet, setFleetMission, fleetShips, assignMission } from '../src/orders';
 import { encodeSnap, InputMsg } from '../src/netcodec';
 
 const PORT = Number(process.env.PORT ?? 17771);
@@ -50,6 +50,12 @@ interface Room {
 }
 
 const REJOIN_GRACE_MS = 180_000;
+
+/** Capacité HUMAINE du salon : le « nombre de joueurs » choisi à la création
+ *  (2..9) ; les humains remplissent, le reste devient des IA au lancement. */
+function roomCap(room: Room): number {
+  return Math.max(2, Math.min(9, room.hostCfg.teamCount ?? 4));
+}
 
 function onlineCount(): number {
   let n = 0;
@@ -84,28 +90,32 @@ function broadcastLobby(room: Room) {
 
 function joinRoom(room: Room, ws: WebSocket, name: string, token: string) {
   if (room.gs) { send(ws, { t: 'err', msg: 'La partie a déjà commencé' }); return; }
-  if (room.players.length >= 4) { send(ws, { t: 'err', msg: 'Salon complet' }); return; }
+  if (room.players.length >= roomCap(room)) { send(ws, { t: 'err', msg: 'Salon complet' }); return; }
   const taken = new Set(room.players.map(p => p.team));
   let team = 0;
   while (taken.has(team)) team++;
   room.players.push({ ws, name: name.slice(0, 16) || 'Amiral', team, token, input: emptyInput(), prevInput: emptyInput() });
   (ws as any).room = room;
-  // partie rapide : décompte lancé dès le premier joueur, départ immédiat à 4
+  // partie rapide : décompte lancé dès le premier joueur, départ immédiat une fois plein
   if (room.quick) {
     if (room.autoStartAt === 0) room.autoStartAt = Date.now() + 25000;
-    if (room.players.length >= 4) { startRoom(room); return; }
+    if (room.players.length >= roomCap(room)) { startRoom(room); return; }
   }
   broadcastLobby(room);
 }
 
 function startRoom(room: Room) {
   const humans = room.players.map(p => p.team);
+  // le « nombre de joueurs » choisi définit le TOTAL d'équipes :
+  // les humains présents d'abord, l'IA comble les sièges vides
+  const total = Math.max(roomCap(room), humans.length);
   const cfg: MatchConfig = {
     ...room.hostCfg,
     seed: Math.floor(Math.random() * 1e9),
     humanTeams: humans,
     multiplayer: true,
-    aiCount: Math.min(room.hostCfg.aiCount, 4 - humans.length),
+    teamCount: total,
+    aiCount: Math.max(0, total - humans.length),
   };
   room.gs = newGame(cfg);
   room.fxBuf = [];
@@ -203,6 +213,7 @@ function runCmd(gs: GameState, team: number, name: string, a: any): string | nul
       if (f) setFleetMission(gs, f, a.mission);
       return null;
     }
+    case 'autoMission': return assignMission(gs, team, own(a.ids ?? []), a.mission);
     case 'fleetFormation': {
       const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team);
       if (f) f.formation = a.frm;
@@ -273,7 +284,7 @@ wss.on('connection', ws => {
     const room: Room | undefined = (ws as any).room;
     switch (m.t) {
       case 'quick': {
-        let target = [...rooms.values()].find(r => r.isPublic && !r.gs && r.players.length < 4);
+        let target = [...rooms.values()].find(r => r.isPublic && !r.gs && r.players.length < roomCap(r));
         if (!target) {
           target = { code: newCode(), isPublic: true, quick: true, autoStartAt: 0, players: [], gone: [], emptyAt: 0, hostCfg: m.cfg, gs: null, fxBuf: [], loop: null, snapAcc: 0, snapSeq: -1 };
           rooms.set(target.code, target);

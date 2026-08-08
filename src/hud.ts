@@ -69,7 +69,7 @@ export class HUD {
 
   private cfg: MatchConfig = {
     seed: Math.floor(Math.random() * 1e9),
-    playerColorIdx: 1, aiCount: 3, personaChoice: 'aleatoire', starChoice: 'aleatoire', difficulty: 'normal',
+    playerColorIdx: 1, aiCount: 3, teamCount: 4, personaChoice: 'aleatoire', starChoice: 'aleatoire', difficulty: 'normal',
   };
   private radarCtx: CanvasRenderingContext2D;
   private sweep = 0;
@@ -129,8 +129,11 @@ export class HUD {
       b.onclick = () => { this.cfg.playerColorIdx = i; this.refreshChips(colorBox, i); sfx.ui(); };
       colorBox.appendChild(b);
     });
-    // nb IA
-    this.makeChips($('opt-ai'), ['1', '2', '3'], 2, i => this.cfg.aiCount = i + 1);
+    // nombre TOTAL de joueurs (humains + IA de remplissage) — la carte grandit avec
+    this.makeChips($('opt-ai'), ['2', '3', '4', '5', '6', '7', '8', '9'], 2, i => {
+      this.cfg.teamCount = i + 2;
+      this.cfg.aiCount = i + 1;   // héritage : solo = total - 1 IA
+    });
     // personnalités
     const personaLabels = ['Aléatoire', ...PERSONA_LIST.map(p => PERSONAS[p].nom)];
     this.makeChips($('opt-persona'), personaLabels, 0, i => {
@@ -214,12 +217,15 @@ export class HUD {
       <span class="kbd">Molette</span> zoomer/dézoomer — dézoomez à fond pour la <b>vue tactique</b> ·
       <span class="kbd">Clic droit</span> menu d'ordres (attaquer, miner, escorter, coloniser…) ·
       <span class="kbd">Double clic droit</span> menu circulaire de la sélection (missions, formations, doctrine) ·
+      Une <b>mission</b> donnée à des vaisseaux sans flotte en crée une automatiquement (même un seul !) ·
       <span class="kbd">J</span> diplomatie (alliances, cibles communes) ·
       En vue tactique : <span class="kbd">ZQSD</span> déplace la carte, panneau à droite pour créer des <b>flottes</b> et choisir les <b>formations</b>
       <h4>ÉCONOMIE</h4>
       <span class="kbd">B</span> construire (avant-poste, mine, satellite) ·
       <span class="kbd">U</span> boutique de la station (vaisseaux, armes, améliorations) ·
       Vendez roche/minerai/gaz en vous amarrant à votre station · Colonisez les planètes avec un <b>transporteur</b> ·
+      Un <b>mineur</b> acheté part travailler tout seul : minage automatique + récupération d'épaves ·
+      5 cargos libres fusionnent en <b>Grand convoi</b> (soute ×5, même commerce, moins de trafic) ·
       Récupérez les épaves en volant dessus
       <h4>RÈGLES</h4>
       Détruisez la <b>station</b> ennemie pour éliminer une équipe. Si la vôtre tombe, c'est perdu.

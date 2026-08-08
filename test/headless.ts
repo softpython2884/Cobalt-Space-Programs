@@ -1,7 +1,7 @@
 // Test headless : simule des parties complètes sans navigateur et vérifie les invariants.
 import { newGame } from '../src/world';
 import { simTick, teamScore, tryBuyShip, fireShipWeapon, playerShip, activateGadget, dropMine, tryJump } from '../src/sim';
-import { SIM_DT, GameState, StarType } from '../src/core';
+import { SIM_DT, GameState, StarType, PIRATE_TEAM } from '../src/core';
 import { SHIP_CLASSES } from '../src/data';
 import { createFleet, setFleetMission } from '../src/orders';
 
@@ -24,7 +24,7 @@ function runMatch(star: StarType | 'aleatoire', seed: number, minutes: number, l
     simTick(gs, SIM_DT);
     if (i % 600 === 0) {
       stats.maxShips = Math.max(stats.maxShips, gs.ships.length);
-      stats.pirates = Math.max(stats.pirates, gs.ships.filter(s => s.team === 4).length);
+      stats.pirates = Math.max(stats.pirates, gs.ships.filter(s => s.team === PIRATE_TEAM).length);
       stats.fleetsSeen = Math.max(stats.fleetsSeen, gs.fleets.length);
       // invariants
       for (const s of gs.ships) {

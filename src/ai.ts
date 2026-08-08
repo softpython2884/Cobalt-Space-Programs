@@ -40,7 +40,7 @@ export function spawnPirateRaid(gs: GameState) {
   const size = Math.min(9, 2 + Math.floor(gs.t / 260));
   const elite = gs.t > 1200;
   const edgeA = gs.rng() * Math.PI * 2;
-  const spawnPos = fromAngle(edgeA, WORLD_R * 0.98);
+  const spawnPos = fromAngle(edgeA, gs.map.worldR * 0.98);
   for (let i = 0; i < size; i++) {
     const p = add(spawnPos, fromAngle(gs.rng() * Math.PI * 2, 25));
     const raider = makeShip(gs, PIRATE_TEAM, 'raider', p, edgeA + Math.PI);
@@ -71,7 +71,7 @@ export function thinkPirates(gs: GameState, dt: number) {
 
     // en fuite arrivé au bord : disparition en saut spatial (vérifié AVANT la
     // réévaluation de la menace, sinon un pirate poursuivi ne despawne jamais)
-    if (s.order.kind === 'flee' && len(s.pos) > WORLD_R * 0.94) {
+    if (s.order.kind === 'flee' && len(s.pos) > gs.map.worldR * 0.94) {
       gs.fx.push({ type: 'saut', pos: { ...s.pos } });
       s.alive = false;
       continue;
@@ -84,13 +84,15 @@ export function thinkPirates(gs: GameState, dt: number) {
       const away = foe ? norm(sub(s.pos, foe.pos)) : norm(s.pos);
       const fleePos = add(s.pos, scale(away, 350));
       const d = len(fleePos);
-      s.order = { kind: 'flee', pos: d > WORLD_R ? scale(fleePos, WORLD_R / d) : fleePos };
+      s.order = { kind: 'flee', pos: d > gs.map.worldR ? scale(fleePos, gs.map.worldR / d) : fleePos };
       continue;
     }
 
-    // chasse : le civil (cargo / mineur / transporteur) le plus proche
+    // chasse : le civil (cargo / mineur / transporteur…) le plus proche, OÙ QU'IL
+    // SOIT — avec une portée fixe, les raiders des grandes cartes (6-9 joueurs)
+    // apparaissaient trop loin de tout, ne voyaient rien et repartaient aussitôt
     const prey = nearestShip(gs, s.pos,
-      o => o.team !== PIRATE_TEAM && o.team >= 0 && SHIP_CLASSES[o.cls].civil && o.cloakT <= 0, 1000);
+      o => o.team !== PIRATE_TEAM && o.team >= 0 && SHIP_CLASSES[o.cls].civil && o.cloakT <= 0);
     if (prey) {
       s.order = { kind: 'attack', targetId: prey.id };
       continue;
@@ -98,9 +100,9 @@ export function thinkPirates(gs: GameState, dt: number) {
     // pas de proie : rôde vers le centre puis repart
     if (s.order.kind === 'idle') {
       if (gs.rng() < 0.4) {
-        s.order = { kind: 'move', pos: fromAngle(gs.rng() * Math.PI * 2, WORLD_R * (0.3 + gs.rng() * 0.5)) };
+        s.order = { kind: 'move', pos: fromAngle(gs.rng() * Math.PI * 2, gs.map.worldR * (0.3 + gs.rng() * 0.5)) };
       } else {
-        s.order = { kind: 'flee', pos: fromAngle(gs.rng() * Math.PI * 2, WORLD_R * 0.98) };
+        s.order = { kind: 'flee', pos: fromAngle(gs.rng() * Math.PI * 2, gs.map.worldR * 0.98) };
       }
     }
   }
@@ -149,7 +151,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 
   const myShips = gs.ships.filter(s => s.alive && s.team === teamId && s.supportT <= 0);
   const miners = myShips.filter(s => s.cls === 'mineur');
-  const cargos = myShips.filter(s => s.cls === 'cargo');
+  // un Grand convoi (fusion automatique) compte pour 5 cargos dans les objectifs
+  const cargoUnits = myShips.filter(s => s.cls === 'cargo').length
+    + myShips.filter(s => s.cls === 'convoi').length * 5;
   const transporters = myShips.filter(s => s.cls === 'transporteur');
   const warships = myShips.filter(s => SHIP_CLASSES[s.cls].power > 5 && !s.isFlagship);
   const flagship = myShips.find(s => s.isFlagship);
@@ -247,9 +251,9 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     && team.credits - (SHIP_CLASSES.transporteur.prix + COLONIZE_COST) > 150 + colonizeReserve) {
     if (!tryBuyShip(gs, teamId, 'transporteur', false)) purchases++;
   }
-  if (cargos.length < wantCargos) {
+  if (cargoUnits < wantCargos) {
     // la flotte marchande grossit vite quand le réseau commercial est en retard
-    const rounds = wantCargos - cargos.length > 4 ? 2 : 1;
+    const rounds = wantCargos - cargoUnits > 4 ? 2 : 1;
     for (let k = 0; k < rounds; k++) {
       if (canBuy(SHIP_CLASSES.cargo.prix) && !tryBuyShip(gs, teamId, 'cargo', false)) purchases++;
     }
@@ -278,7 +282,7 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     const count = (st2: 'bureau' | 'mine' | 'depot' | 'labo') =>
       gs.structures.filter(x => x.alive && x.team === teamId && x.stype === st2).length;
     const roll = gs.rng();
-    if (roll < 0.45 && myPlanets.length > 0 && cargos.length < wantCargos) {
+    if (roll < 0.45 && myPlanets.length > 0 && cargoUnits < wantCargos) {
       tryBuyShip(gs, teamId, 'cargo', false);
     } else if (roll < 0.8) {
       const stype2: 'bureau' | 'mine' | 'depot' = roll < 0.62 ? 'bureau' : roll < 0.72 ? 'mine' : 'depot';
@@ -351,8 +355,11 @@ function thinkOneTeam(gs: GameState, teamId: number) {
 
   // ---------- 5. ORDRES ÉCONOMIQUES ----------
   for (const m of miners) if (m.order.kind === 'idle' || m.order.kind === 'guard') m.order = { kind: 'mine' };
-  for (const c of cargos) {
-    if (c.order.kind === 'idle' || c.order.kind === 'guard') { c.order = { kind: 'trade' }; c.tradePhase = 0; }
+  for (const c of myShips) {
+    if ((c.cls === 'cargo' || c.cls === 'convoi') && (c.order.kind === 'idle' || c.order.kind === 'guard')) {
+      c.order = { kind: 'trade' };
+      c.tradePhase = 0;
+    }
   }
   for (const t of transporters) {
     if (t.order.kind !== 'colonize' && neutralPlanets.length > 0 && team.credits > COLONIZE_COST + 100) {

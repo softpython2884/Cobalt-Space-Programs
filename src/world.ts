@@ -8,7 +8,7 @@ import {
   START_CREDITS, SHIP_CLASSES,
 } from './data';
 import { makeShip, makeStructure, makePlanet, makeRoid, makeCloud, applyUpgrades } from './entities';
-import { resetFleetCounter } from './orders';
+import { resetFleetCounter, createFleet, setFleetMission } from './orders';
 
 function pickStar(rngv: () => number, choice: StarType | 'aleatoire'): StarType {
   if (choice !== 'aleatoire') return choice;
@@ -18,7 +18,7 @@ function pickStar(rngv: () => number, choice: StarType | 'aleatoire'): StarType 
   return 'sol_jaune';
 }
 
-function makeMap(rng: () => number, starType: StarType): MapInfo {
+function makeMap(rng: () => number, starType: StarType, teamCount: number): MapInfo {
   const def = STARS[starType];
   const bodies: StarBody[] = [];
   for (let i = 0; i < def.bodies; i++) {
@@ -29,8 +29,10 @@ function makeMap(rng: () => number, starType: StarType): MapInfo {
       orbitR, orbitSpeed: 0.15 + i * 0.05, phase: (i / def.bodies) * Math.PI * 2,
     });
   }
+  // la carte grandit avec le monde : 4 équipes = rayon de base, 6 = +32 %, 9 = +80 %
+  const worldR = Math.round(WORLD_R * (1 + Math.max(0, teamCount - 4) * 0.16));
   return {
-    starType, starName: def.nom, bodies,
+    starType, starName: def.nom, bodies, worldR,
     killRadius: def.killRadius,
     supernovaAt: def.supernovaDelay > 0 ? def.supernovaDelay : -1,
     neutronPeriod: def.neutronPeriod,
@@ -45,7 +47,13 @@ export function newGame(cfg: MatchConfig): GameState {
   resetFleetCounter();
   const rng = makeRng(cfg.seed);
   const starType = pickStar(rng, cfg.starChoice);
-  const map = makeMap(rng, starType);
+  // nombre TOTAL d'équipes : humains + IA de remplissage (teamCount prioritaire,
+  // sinon héritage aiCount pour les anciennes configs et les tests)
+  const humans0 = cfg.humanTeams && cfg.humanTeams.length > 0 ? cfg.humanTeams : [cfg.playerColorIdx];
+  const teamCount = Math.max(2, Math.min(TEAM_DEFS.length,
+    cfg.teamCount ?? (humans0.length + cfg.aiCount)));
+  const map = makeMap(rng, starType, teamCount);
+  const wr = map.worldR;
 
   const gs: GameState = {
     t: 0, seed: cfg.seed, rng, cfg, map, nextId: 1,
@@ -61,21 +69,21 @@ export function newGame(cfg: MatchConfig): GameState {
     storms: [], stormT: 480 + rng() * 120,
     meteors: [], meteorT: 480,
     colossusBeams: [],
-    plans: { 0: mkPlan(), 1: mkPlan(), 2: mkPlan(), 3: mkPlan() },
+    plans: {},
     log: [], alertText: '', alertT: 0, alertColor: '#ff4b4b',
   };
 
   // ---------- Équipes (solo : joueur + IA ; multi : humains + IA de remplissage) ----------
-  const humans = cfg.humanTeams && cfg.humanTeams.length > 0 ? cfg.humanTeams : [cfg.playerColorIdx];
+  const humans = humans0;
   gs.playerTeam = humans[0];
   const aiTeamIdx: number[] = [];
-  for (let i = 0; i < 4 && aiTeamIdx.length < cfg.aiCount && humans.length + aiTeamIdx.length < 4; i++) {
+  for (let i = 0; i < TEAM_DEFS.length && humans.length + aiTeamIdx.length < teamCount; i++) {
     if (!humans.includes(i)) aiTeamIdx.push(i);
   }
   const active = [...humans, ...aiTeamIdx];
   gs.activeTeams = active;
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < TEAM_DEFS.length; i++) {
     const def = TEAM_DEFS[i];
     const isActive = active.includes(i);
     const persona: PersonaId = cfg.personaChoice === 'aleatoire' ? pick(rng, PERSONA_LIST) : cfg.personaChoice;
@@ -88,15 +96,15 @@ export function newGame(cfg: MatchConfig): GameState {
       secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, garrisonT: 30, score: 0, kills: 0, colossusUsed: false,
     };
     gs.teams.push(team);
+    gs.plans[i] = mkPlan();
   }
 
-  // ---------- Bases (réparties sur un cercle) ----------
-  const baseR = WORLD_R * 0.72;
-  const baseAngles = [Math.PI * 0.25, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75];
+  // ---------- Bases (réparties uniformément sur un cercle) ----------
+  const baseR = wr * 0.72;
   // décale d'un offset aléatoire pour varier
   const angleOffset = rr(rng, 0, Math.PI * 2);
   active.forEach((teamId, idx) => {
-    const a = baseAngles[idx % 4] + angleOffset;
+    const a = (idx / active.length) * Math.PI * 2 + angleOffset;
     const pos = fromAngle(a, baseR);
     const station = makeStructure(gs, teamId, 'station', pos);
     gs.teams[teamId].stationId = station.id;
@@ -106,17 +114,22 @@ export function newGame(cfg: MatchConfig): GameState {
     flag.isFlagship = true;
     applyUpgrades(gs, flag);
     if (teamId === gs.playerTeam) gs.playerShipId = flag.id;
-    // Un mineur de départ
-    makeShip(gs, teamId, 'mineur', fromAngle(a + 0.06, baseR - 40), a + Math.PI);
+    // Un mineur de départ — qui se met au travail TOUT SEUL (minage auto + épaves)
+    const miner = makeShip(gs, teamId, 'mineur', fromAngle(a + 0.06, baseR - 40), a + Math.PI);
+    if (humans.includes(teamId)) {
+      const mf = createFleet(gs, teamId, [miner.id]);
+      if (mf) setFleetMission(gs, mf, { kind: 'mine_auto' });
+    }
   });
 
-  // ---------- Planètes ----------
-  const planetCount = ri(rng, 7, 10);
+  // ---------- Planètes (davantage sur les grandes cartes) ----------
+  const extra = Math.max(0, active.length - 4);
+  const planetCount = ri(rng, 7, 10) + Math.round(extra * 1.3);
   const names = [...PLANET_NAMES];
   for (let i = 0; i < planetCount; i++) {
     let pos = v2(), ok = false;
     for (let tries = 0; tries < 40 && !ok; tries++) {
-      pos = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 220, WORLD_R * 0.92));
+      pos = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 220, wr * 0.92));
       ok = gs.planets.every(p => dist(p.pos, pos) > 220)
         && gs.structures.every(s => dist(s.pos, pos) > 260);
     }
@@ -128,9 +141,9 @@ export function newGame(cfg: MatchConfig): GameState {
   }
 
   // ---------- Ceintures d'astéroïdes ----------
-  const beltCount = ri(rng, 5, 7);
+  const beltCount = ri(rng, 5, 7) + extra;
   for (let b = 0; b < beltCount; b++) {
-    const center = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 260, WORLD_R * 0.88));
+    const center = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 260, wr * 0.88));
     const n = ri(rng, 6, 12);
     const rich = rng() < 0.4; // ceinture riche en minerai
     for (let i = 0; i < n; i++) {
@@ -141,9 +154,9 @@ export function newGame(cfg: MatchConfig): GameState {
   }
 
   // ---------- Nuages de gaz ----------
-  const cloudCount = ri(rng, 4, 6);
+  const cloudCount = ri(rng, 4, 6) + Math.ceil(extra * 0.7);
   for (let i = 0; i < cloudCount; i++) {
-    const pos = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 300, WORLD_R * 0.85));
+    const pos = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 300, wr * 0.85));
     makeCloud(gs, pos, rr(rng, 40, 70), ri(rng, 150, 300));
   }
 

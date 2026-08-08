@@ -1,7 +1,7 @@
 // ============ COBALT SECTOR — point d'entrée & boucle de jeu ============
 import {
   GameState, MatchConfig, SIM_DT, V2, dist, clamp, turnToward, StructType, GadgetId,
-  structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind, PlanFilter, Stance,
+  structById, shipById, planetById, PIRATE_TEAM, areAllied, OrderKind, PlanFilter, Stance, WORLD_R,
 } from './core';
 import {
   SHIP_CLASSES, DOCK_RANGE, MINES, GADGET_ORDER, MODES, STRUCTS, GUARD_COST, PLANET_UPGRADE_COST,
@@ -17,7 +17,7 @@ import {
   proposeAlliance, breakAlliance, requestFocus, acceptOffer, refuseOffer, buyGuards,
   tryUpgradePlanet, requestDefend,
 } from './sim';
-import { setFleetMission, removeFromFleet } from './orders';
+import { setFleetMission, removeFromFleet, assignMission } from './orders';
 import { canDetect, speedMult } from './entities';
 import { createFleet, disbandFleet, issueOrder, fleetShips } from './orders';
 import { Renderer3D } from './render3d';
@@ -137,6 +137,7 @@ function localExec(name: string, a: any): string | null {
     case 'fleetCreate': return createFleet(gs, team, own(a.ids)) ? null : 'Sélectionnez au moins 1 vaisseau';
     case 'fleetDisband': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) disbandFleet(gs, f.id); return null; }
     case 'fleetMission': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) setFleetMission(gs, f, a.mission); return null; }
+    case 'autoMission': return assignMission(gs, team, own(a.ids ?? []), a.mission);
     case 'fleetFormation': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) f.formation = a.frm; return null; }
     case 'fleetStance': { const f = gs.fleets.find(x => x.id === a.fleetId && x.team === team); if (f) f.stance = a.stance as Stance; return null; }
     case 'planFilter': gs.plans[team].filter = a.filter; return null;
@@ -247,7 +248,9 @@ function handleInput(dt: number) {
   // ---------- Zoom ----------
   if (input.wheel !== 0) {
     // large champ de vision — encore plus au commandes du Colosse
-    const maxH = ship?.cls === 'colosse' ? 1600 : 1250;
+    // le dézoom maximal suit la taille de la carte (6-9 joueurs = monde plus vaste)
+    const wf = gs.map.worldR / WORLD_R;
+    const maxH = (ship?.cls === 'colosse' ? 1600 : 1250) * wf;
     renderer.camH = clamp(renderer.camH * Math.exp(input.wheel * 0.0012), 48, maxH);
   }
 
@@ -631,16 +634,11 @@ function handleInput(dt: number) {
   };
   hud.onFleetMission = kind => {
     if (!gs) return;
-    const fleets = new Set<number>();
-    for (const id of gs.selection) {
-      const sh = shipById(gs, id);
-      if (sh?.fleetId != null) {
-        const f = gs.fleets.find(f => f.id === sh.fleetId);
-        if (f && f.team === gs.playerTeam) fleets.add(f.id);
-      }
-    }
-    if (fleets.size === 0) { hud.flashHint('Sélectionnez une flotte pour lui assigner une mission.'); sfx.error(); return; }
-    for (const fid of fleets) cmd('fleetMission', { fleetId: fid, mission: { kind } });
+    // plus besoin d'une flotte préalable : les vaisseaux isolés de la sélection
+    // en forment une automatiquement (même un seul — « va miner » suffit)
+    const own = gs.selection.filter(id => shipById(gs!, id)?.team === gs!.playerTeam);
+    if (own.length === 0) { hud.flashHint('Sélectionnez au moins un vaisseau pour lui assigner une mission.'); sfx.error(); return; }
+    cmd('autoMission', { ids: own, mission: { kind } });
     sfx.buy();
   };
 }
@@ -1372,7 +1370,7 @@ hud.onMpQuick = async name => {
   mpFooter('Connexion…');
   // partie rapide : réglages standards tirés au sort côté client
   const cfg: MatchConfig = {
-    seed: Math.floor(Math.random() * 1e9), playerColorIdx: 0, aiCount: 3,
+    seed: Math.floor(Math.random() * 1e9), playerColorIdx: 0, aiCount: 3, teamCount: 4,
     personaChoice: 'aleatoire', starChoice: 'aleatoire', difficulty: 'normal',
   };
   if (await mpConnect(autoAddr())) { net!.quick(name, cfg); mpFooter('Recherche de joueurs…'); }

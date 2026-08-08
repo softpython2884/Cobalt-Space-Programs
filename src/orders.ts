@@ -132,6 +132,29 @@ export function setFleetMission(gs: GameState, fleet: Fleet, mission: Order) {
   }
 }
 
+/** Assigne une MISSION à une sélection quelconque : les vaisseaux déjà en flotte
+ *  transmettent la mission à leur flotte, les isolés forment automatiquement une
+ *  flotte (même un seul vaisseau — « va miner » suffit, la flotte naît toute seule). */
+export function assignMission(gs: GameState, team: number, shipIds: number[], mission: Order): string | null {
+  const ships = shipIds.map(id => shipById(gs, id)).filter((s): s is Ship => !!s && s.team === team);
+  if (ships.length === 0) return 'Aucun vaisseau valide';
+  const fleetIds = new Set<number>();
+  const loose: Ship[] = [];
+  for (const s of ships) {
+    if (s.fleetId != null) fleetIds.add(s.fleetId);
+    else loose.push(s);
+  }
+  for (const fid of fleetIds) {
+    const f = gs.fleets.find(f2 => f2.id === fid && f2.team === team);
+    if (f) setFleetMission(gs, f, mission);
+  }
+  if (loose.length > 0) {
+    const f = createFleet(gs, team, loose.map(s => s.id));
+    if (f) setFleetMission(gs, f, mission);
+  }
+  return null;
+}
+
 /** Donne un ordre à une liste de vaisseaux (sélection) : gère les flottes entières si le chef est inclus. */
 export function issueOrder(gs: GameState, shipIds: number[], order: Order) {
   const done = new Set<number>();
