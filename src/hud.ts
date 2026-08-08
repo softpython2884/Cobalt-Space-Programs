@@ -449,6 +449,9 @@ export class HUD {
       row.innerHTML = `<span>${label}${you} — ${ships} vsx · ${planets} col.</span><span class="ts-dot" style="background:${t.cssColor}"></span>`;
       box.appendChild(row);
     }
+    // la barre tactique se cale toujours SOUS le panneau des scores : à 6-9
+    // équipes la liste dépasse le top fixe de 185 px et les deux se chevauchaient
+    $('tacticalbar').style.top = `${Math.max(185, $('topright').getBoundingClientRect().bottom + 8)}px`;
   }
 
   private updateLog(gs: GameState) {
