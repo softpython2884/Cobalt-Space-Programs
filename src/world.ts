@@ -85,7 +85,7 @@ export function newGame(cfg: MatchConfig): GameState {
       isAI: !humans.includes(i),
       persona, alive: isActive, stationId: -1,
       upgrades: {}, gadgets: ['fumee'], gadgetCd: {},
-      secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, score: 0, kills: 0, colossusUsed: false,
+      secondaries: [], aiCd: 2 + rng() * 3, respawnT: 0, garrisonT: 30, score: 0, kills: 0, colossusUsed: false,
     };
     gs.teams.push(team);
   }
@@ -111,7 +111,7 @@ export function newGame(cfg: MatchConfig): GameState {
   });
 
   // ---------- Planètes ----------
-  const planetCount = ri(rng, 6, 9);
+  const planetCount = ri(rng, 7, 10);
   const names = [...PLANET_NAMES];
   for (let i = 0; i < planetCount; i++) {
     let pos = v2(), ok = false;
@@ -128,7 +128,7 @@ export function newGame(cfg: MatchConfig): GameState {
   }
 
   // ---------- Ceintures d'astéroïdes ----------
-  const beltCount = ri(rng, 4, 6);
+  const beltCount = ri(rng, 5, 7);
   for (let b = 0; b < beltCount; b++) {
     const center = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 260, WORLD_R * 0.88));
     const n = ri(rng, 6, 12);
@@ -141,10 +141,50 @@ export function newGame(cfg: MatchConfig): GameState {
   }
 
   // ---------- Nuages de gaz ----------
-  const cloudCount = ri(rng, 3, 5);
+  const cloudCount = ri(rng, 4, 6);
   for (let i = 0; i < cloudCount; i++) {
     const pos = fromAngle(rr(rng, 0, Math.PI * 2), rr(rng, map.killRadius + 300, WORLD_R * 0.85));
     makeCloud(gs, pos, rr(rng, 40, 70), ri(rng, 150, 300));
+  }
+
+  // ---------- ÉQUITÉ : chaque base a son kit de départ ----------
+  // Le hasard fait la carte, mais personne ne démarre le ventre vide : autour de
+  // chaque station, on garantit un minimum d'astéroïdes, un nuage de gaz et une
+  // planète à portée raisonnable — les surplus, eux, restent au petit bonheur.
+  for (const teamId of active) {
+    const st = gs.structures.find(s => s.id === gs.teams[teamId].stationId)!;
+    const toward = (d: number, jitter: number) => {
+      // point entre la base et le centre (jamais côté bordure, jamais dans l'étoile)
+      const dir = Math.atan2(-st.pos.y, -st.pos.x) + rr(rng, -0.7, 0.7);
+      const p = { x: st.pos.x + Math.cos(dir) * d + rr(rng, -jitter, jitter), y: st.pos.y + Math.sin(dir) * d + rr(rng, -jitter, jitter) };
+      const dc = Math.hypot(p.x, p.y);
+      if (dc < map.killRadius + 200) { const f = (map.killRadius + 200) / dc; p.x *= f; p.y *= f; }
+      return p;
+    };
+    // minerai/roche : au moins ~450 unités dans un rayon de 480
+    const nearAmount = gs.roids.filter(r => dist(r.pos, st.pos) < 480).reduce((a, r) => a + r.amount, 0);
+    if (nearAmount < 450) {
+      const center = toward(rr(rng, 240, 340), 40);
+      const n = ri(rng, 6, 9);
+      for (let i = 0; i < n; i++) {
+        const p = { x: center.x + rr(rng, -80, 80), y: center.y + rr(rng, -80, 80) };
+        makeRoid(gs, rng() < 0.35 ? 'minerai' : 'roche', p, rr(rng, 5, 12), ri(rng, 70, 150));
+      }
+    }
+    // un nuage de gaz à portée
+    if (!gs.clouds.some(c => dist(c.pos, st.pos) < 560)) {
+      makeCloud(gs, toward(rr(rng, 320, 440), 60), rr(rng, 40, 60), ri(rng, 150, 260));
+    }
+    // une planète colonisable dans le voisinage
+    if (!gs.planets.some(p => dist(p.pos, st.pos) < 600)) {
+      let pos = toward(rr(rng, 360, 520), 70);
+      for (let tries = 0; tries < 20; tries++) {
+        if (gs.planets.every(p => dist(p.pos, pos) > 200) && gs.structures.every(s => dist(s.pos, pos) > 240)) break;
+        pos = toward(rr(rng, 360, 520), 70);
+      }
+      const name = names.splice(ri(rng, 0, Math.max(0, names.length - 1)), 1)[0] ?? 'Frontière';
+      makePlanet(gs, pick(rng, PLANET_TYPE_LIST), name, pos, rr(rng, 22, 34));
+    }
   }
 
   addLog(gs, `Système « ${map.starName} » généré.`, '#40c4ff');

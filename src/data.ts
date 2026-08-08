@@ -38,6 +38,10 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   missile: { id: 'missile', nom: 'Missile guidé', type: 'homing', dmg: 30, cd: 5, range: 340, energy: 12, speed: 150, aoe: 12, lockTime: 1.2, color: 0xff7ad8, prix: 0, desc: 'Maintenir A : verrouille la cible, relâcher : tir.' },
   salve: { id: 'salve', nom: 'Salve de l\'Apocalypse', type: 'homing', dmg: 26, cd: 10, range: 380, energy: 60, speed: 160, aoe: 12, lockTime: 1.5, color: 0xff7ad8, prix: 0, desc: '8 missiles, 8 cibles verrouillées simultanément.' },
   brise_monde: { id: 'brise_monde', nom: 'Brise-Monde', type: 'beam', dmg: 0, cd: 120, range: 430, energy: 300, color: 0xff2222, prix: 0, desc: 'Fait s\'effondrer le noyau d\'une planète.' },
+  // ---- armement intégré du croiseur (refonte) ----
+  blast_vert: { id: 'blast_vert', nom: 'Canon Blast', type: 'beam', dmg: 4, cd: 0.12, range: 230, energy: 1.9, color: 0x4bff7a, prix: 0, desc: 'Rayon vert continu : ravage structures et boucliers, mord peu la coque.' },
+  missile_triple: { id: 'missile_triple', nom: 'Triple missile', type: 'homing', dmg: 24, cd: 6, range: 320, energy: 16, speed: 150, aoe: 10, lockTime: 1.2, color: 0xff7ad8, prix: 0, desc: '3 missiles à tête chercheuse sur 3 cibles (A pour verrouiller).' },
+  canon_lourd_auto: { id: 'canon_lourd_auto', nom: 'Canon lourd automatique', type: 'proj', dmg: 16, cd: 1.3, range: 240, energy: 9, speed: 240, color: 0xffb35d, prix: 0, desc: 'Cible et tire sur 3 vaisseaux simultanément.' },
 };
 
 // ---------- Classes de vaisseaux ----------
@@ -83,11 +87,11 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
   },
   croiseur: {
     id: 'croiseur', nom: 'Croiseur', role: 'Ligne de front',
-    hull: 260, shield: 140, energy: 160, speed: 46, accel: 70, turn: 2.2,
+    hull: 260, shield: 140, energy: 180, speed: 46, accel: 70, turn: 2.2,
     radius: 9, sensor: 300, cargo: 30,
-    weapons: ['canon_lourd', 'missile'], secondarySlots: 2, mineType: 'aimant', mineMax: 4,
-    prix: 1200, unlockLevel: 2, power: 34, civil: false, canMine: false, canColonize: false,
-    desc: 'Le poing de la flotte.',
+    weapons: ['blast_vert', 'missile_triple', 'canon_lourd_auto'], secondarySlots: 2, mineType: 'aimant', mineMax: 4,
+    prix: 1200, unlockLevel: 2, power: 38, civil: false, canMine: false, canColonize: false,
+    desc: 'Blast vert anti-structures, triple missile, canon lourd multi-cibles.',
   },
   mineur: {
     id: 'mineur', nom: 'Mineur', role: 'Extraction',
@@ -158,7 +162,15 @@ export const STRUCTS: Record<StructType, StructDef> = {
   labo: { stype: 'labo', nom: 'Laboratoire', hull: 260, shield: 140, radius: 11, sensor: 180, prix: 700, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Gros revenus, mais doit être bâti DANS un nuage électrique.' },
   usine: { stype: 'usine', nom: 'Usine d\'assemblage', hull: 850, shield: 250, radius: 16, sensor: 220, prix: 2000, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Requiert 5 laboratoires. 4 min de chantier ANNONCÉ À TOUS — survivez et devenez le COLOSSE.' },
   depot: { stype: 'depot', nom: 'Dépôt', hull: 320, shield: 80, radius: 10, sensor: 160, prix: 350, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Vos mineurs y déchargent sur place ; la valeur s\'écoule à débit limité.' },
+  bureau: { stype: 'bureau', nom: 'Bureau', hull: 240, shield: 60, radius: 9, sensor: 150, prix: 500, weaponRange: 0, weaponDmg: 0, weaponCd: 0, desc: 'Administration spatiale : revenu passif, sans condition.' },
 };
+export const BUREAU_INCOME = 22;          // crédits / 10 s, inconditionnel
+export const BUREAU_INCOME_PERIOD = 10;
+
+// ---------- Corvettes de garnison (gratuites, réapparaissent à la station) ----------
+export const GARRISON_BY_LEVEL = [0, 3, 5, 8];   // indexé par niveau de station
+export const GARRISON_FIRST = 30;                // premier déploiement (s)
+export const GARRISON_RESPAWN = 90;              // réassort des pertes (s)
 
 // ---------- Économie ----------
 export const RES_PRICE: Record<Res, number> = { roche: 4, minerai: 9, gaz: 14 };

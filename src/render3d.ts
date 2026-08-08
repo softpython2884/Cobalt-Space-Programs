@@ -582,7 +582,7 @@ export class Renderer3D {
       if (drill) drill.rotation.y += dt * 3;
       const stShape = st.stype === 'station' ? 'octa' : st.stype === 'usine' ? 'octa' : st.stype === 'mine' ? 'trapeze'
         : st.stype === 'labo' ? 'hexa' : st.stype === 'satellite' ? 'semi'
-        : st.stype === 'depot' ? 'square' : 'square';
+        : st.stype === 'depot' ? 'square' : st.stype === 'bureau' ? 'square' : 'square';
       this.syncIcon(st.id, st.pos, stShape, teamColorOf(st.team), tactical, 0);
     }
 

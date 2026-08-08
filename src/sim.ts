@@ -17,6 +17,7 @@ import {
   COLOSSE_LABS_REQUIRED, COLOSSE_BUILD_TIME, COLOSSE_RAY_COUNT, COLOSSE_RAY_RANGE, COLOSSE_SALVO_SIZE,
   STATION_UPGRADES, STATION_SALVO_SIZE, STATION_SALVO_CD, STATION_BEAM_RANGE, AEGIS_DUR, AEGIS_CD,
   OUTPOST_UPGRADE_PRICE, OUTPOST_MAX_LEVEL, TRADE_HUB_MULT, TRADE_HUB_OWNER_CUT,
+  BUREAU_INCOME, BUREAU_INCOME_PERIOD, GARRISON_BY_LEVEL, GARRISON_RESPAWN,
 } from './data';
 import {
   makeRoid, makeCloud,
@@ -133,6 +134,7 @@ export function simTick(gs: GameState, dt: number) {
   for (const s of gs.ships) if (s.alive) integrate(gs, s, dt);
 
   updateStructures(gs, dt);
+  updateGarrisons(gs, dt);
   updatePlanets(gs, dt);
   updateProjectiles(gs, dt);
   updateMines(gs, dt);
@@ -681,7 +683,7 @@ function combatApproach(gs: GameState, s: Ship, targetPos: V2, target: Ship | St
   for (let i = 0; i < s.weapons.length; i++) {
     const ws = s.weapons[i];
     const w = WEAPONS[ws.wid];
-    if (ws.wid === 'missile') {
+    if (ws.wid === 'missile' || ws.wid === 'missile_triple') {
       if (isHumanFlag(gs, s)) continue;            // les humains verrouillent eux-mêmes (touche A)
       if (target.kind === 'planet') continue;
       const tid = (target as Ship | Structure).id;
@@ -1010,6 +1012,28 @@ export function fireShipWeapon(gs: GameState, s: Ship, slot: number, aim: V2, ta
     return true;
   }
 
+  // canon lourd automatique (croiseur) : cible et tire sur 3 vaisseaux à la fois
+  if (w.id === 'canon_lourd_auto') {
+    const foes = gs.ships
+      .filter(x => x.alive && isEnemy(s.team, x.team) && x.cloakT <= 0 && x.smokeT <= 0 && dist(x.pos, s.pos) < w.range)
+      .sort((a2, b2) => dist(a2.pos, s.pos) - dist(b2.pos, s.pos))
+      .slice(0, 3);
+    if (foes.length === 0) {
+      makeProjectile(gs, s.team, w.id, from, scale(dir, w.speed ?? 240), w.dmg, (w.range / (w.speed ?? 240)) * 1.15, null);
+    } else {
+      for (const t of foes) {
+        // tir prédictif : on vise là où la cible sera à l'arrivée de l'obus
+        const d = dist(t.pos, s.pos);
+        const lead = add(t.pos, scale(t.vel, d / (w.speed ?? 240)));
+        const dir2 = norm(sub(lead, s.pos));
+        makeProjectile(gs, s.team, w.id, add(s.pos, scale(dir2, s.radius + 2)), scale(dir2, w.speed ?? 240),
+          w.dmg, (w.range / (w.speed ?? 240)) * 1.15, null);
+      }
+    }
+    gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'canon_lourd' });
+    return true;
+  }
+
   // projectiles
   const spread = w.spread ?? 0;
   const a = angleOf(dir) + (spread > 0 ? (gs.rng() - 0.5) * 2 * spread : 0);
@@ -1109,6 +1133,12 @@ function updateProjectiles(gs: GameState, dt: number) {
 //  DÉGÂTS & MORT
 // ================================================================
 export function dealHit(gs: GameState, target: Ship | Structure | Planet, dmg: number, attackerTeam: number, wid?: WeaponId) {
+  // le Blast vert du croiseur : ravage structures et boucliers, mord peu la coque nue
+  if (wid === 'blast_vert') {
+    if (target.kind === 'structure') dmg *= 2.2;
+    else if (target.kind === 'planet') dmg *= 2;
+    else dmg *= target.shield > 1 ? 1.8 : 0.5;
+  }
   if (target.kind === 'planet') {
     if (target.owner < 0) return;
     target.colonyHp -= dmg;
@@ -1287,6 +1317,35 @@ function updateStructures(gs: GameState, dt: number) {
       }
     }
 
+    // avant-poste niv. 2+ : salve de 3 missiles ; niv. 3 : rayon rouge à chauffe
+    if (st.stype === 'avantposte' && st.level >= 2) {
+      st.salvoT = Math.max(0, st.salvoT - dt);
+      if (st.salvoT <= 0) {
+        const foes = gs.ships
+          .filter(s => s.alive && isEnemy(st.team, s.team) && s.cloakT <= 0 && dist(s.pos, st.pos) < 300)
+          .sort((x, y) => dist(x.pos, st.pos) - dist(y.pos, st.pos));
+        if (foes.length > 0) {
+          st.salvoT = 12;
+          for (let i = 0; i < 3; i++) {
+            const t2 = foes[i % foes.length];
+            const from = add(st.pos, fromAngle((i / 3) * Math.PI * 2, st.radius + 3));
+            makeProjectile(gs, st.team, 'missile', from, scale(norm(sub(t2.pos, from)), 150), 22, 3, t2.id);
+            gs.fx.push({ type: 'tir', pos: { ...from }, color: 0xff7ad8, wid: 'missile' });
+          }
+        }
+      }
+      if (st.level >= 3) {
+        const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, 240);
+        if (foe) {
+          const key = `st${st.id}:${foe.id}`;
+          const heat = Math.min(4, (rayHeat.get(key) ?? 0) + dt);
+          rayHeat.set(key, heat);
+          applyDamage(gs, foe, (5 + heat * 3.5) * dt, st.team);
+          gs.colossusBeams.push({ x1: st.pos.x, y1: st.pos.y, x2: foe.pos.x, y2: foe.pos.y, heat });
+        }
+      }
+    }
+
     // rayon à chauffe (armement niv. 2) : comme ceux du Colosse, sur l'ennemi le plus proche
     if (armLvl >= 2) {
       const foe = nearestShip(gs, st.pos, s => isEnemy(st.team, s.team) && s.smokeT <= 0 && s.cloakT <= 0, STATION_BEAM_RANGE);
@@ -1388,6 +1447,38 @@ function updateStructures(gs: GameState, dt: number) {
       const inStorm = gs.storms.some(sc => sc.alive && dist(sc.pos, st.pos) < sc.radius);
       if (inStorm) team.credits += Math.round(LABO_INCOME * mult);
     }
+    if (st.stype === 'bureau' && st.incomeT >= BUREAU_INCOME_PERIOD) {
+      st.incomeT = 0;
+      team.credits += Math.round(BUREAU_INCOME * mult);
+    }
+  }
+}
+
+// ================================================================
+//  CORVETTES DE GARNISON — gratuites, réapparaissent à la station
+//  (3 / 5 / 8 selon le niveau : même fauché, on a de quoi se battre)
+// ================================================================
+function updateGarrisons(gs: GameState, dt: number) {
+  for (const team of gs.teams) {
+    if (!team.alive || !gs.activeTeams.includes(team.id)) continue;
+    team.garrisonT -= dt;
+    if (team.garrisonT > 0) continue;
+    const st = structById(gs, team.stationId);
+    if (!st) { team.garrisonT = 30; continue; }
+    const want = GARRISON_BY_LEVEL[st.level] ?? 3;
+    const have = gs.ships.filter(s => s.alive && s.team === team.id && s.garrison).length;
+    if (have >= want) { team.garrisonT = 15; continue; }
+    for (let i = have; i < want; i++) {
+      const pos = add(st.pos, fromAngle(gs.rng() * Math.PI * 2, st.radius + 30));
+      const cv = makeShip(gs, team.id, 'corvette', pos);
+      cv.garrison = true;
+      cv.order = { kind: 'guard', pos: { ...st.pos } };
+      gs.fx.push({ type: 'saut', pos: { ...pos } });
+    }
+    if (team.id === gs.playerTeam) {
+      addLog(gs, `Garnison déployée : ${want - have} corvette(s) de défense (gratuites).`, '#40c4ff');
+    }
+    team.garrisonT = GARRISON_RESPAWN;
   }
 }
 
@@ -1933,7 +2024,7 @@ export function missileFireCmd(gs: GameState, teamId: number, targetId: number):
   if (!ship) return 'Aucun vaisseau';
   const slot = missileSlot(ship);
   if (slot < 0) return 'Pas de lance-missiles';
-  const w = WEAPONS.missile;
+  const w = WEAPONS[ship.weapons[slot].wid];
   if (ship.weapons[slot].cd > 0) return 'Missile en recharge';
   if (ship.energy < w.energy) return 'Énergie insuffisante';
   const target = shipById(gs, targetId) ?? structById(gs, targetId);
@@ -2470,7 +2561,7 @@ export function colossusWorldBreaker(gs: GameState, c: Ship, aim: V2): string | 
 //  MISSILES — verrouillage et tir
 // ================================================================
 export function missileSlot(s: Ship): number {
-  return s.weapons.findIndex(w => w.wid === 'missile');
+  return s.weapons.findIndex(w => w.wid === 'missile' || w.wid === 'missile_triple');
 }
 export interface LockState { targetId: number; progress: number; ready: boolean }
 
@@ -2478,7 +2569,7 @@ export interface LockState { targetId: number; progress: number; ready: boolean 
 export function lockTick(gs: GameState, s: Ship, aim: V2, dt: number): LockState | null {
   const slot = missileSlot(s);
   if (slot < 0) return null;
-  const w = WEAPONS.missile;
+  const w = WEAPONS[s.weapons[slot].wid];
   if (s.weapons[slot].cd > 0 || s.energy < w.energy || s.empT > 0 || s.mode === 'croisiere' || s.mode === 'espion') {
     lockCancel(s);
     return { targetId: -1, progress: 0, ready: false };
@@ -2513,8 +2604,9 @@ export function lockTick(gs: GameState, s: Ship, aim: V2, dt: number): LockState
 /** Relâchement de A : tire si verrouillé, sinon annule. */
 export function lockRelease(gs: GameState, s: Ship): boolean {
   const slot = missileSlot(s);
-  const w = WEAPONS.missile;
-  const canFire = slot >= 0 && s.lockT >= (w.lockTime ?? 1.2) && s.lockTargetId >= 0
+  if (slot < 0) { lockCancel(s); return false; }
+  const w = WEAPONS[s.weapons[slot].wid];
+  const canFire = s.lockT >= (w.lockTime ?? 1.2) && s.lockTargetId >= 0
     && s.weapons[slot].cd <= 0 && s.energy >= w.energy;
   if (canFire) fireMissile(gs, s, slot, s.lockTargetId);
   lockCancel(s);
@@ -2523,15 +2615,28 @@ export function lockRelease(gs: GameState, s: Ship): boolean {
 export function lockCancel(s: Ship) { s.lockT = 0; s.lockTargetId = -1; }
 
 function fireMissile(gs: GameState, s: Ship, slot: number, targetId: number) {
-  const w = WEAPONS.missile;
+  const wid = s.weapons[slot].wid;
+  const w = WEAPONS[wid];
   s.weapons[slot].cd = w.cd;
   s.energy -= w.energy;
   if (s.cloakT > 0) s.cloakT = 0;
-  const target = shipById(gs, targetId) ?? structById(gs, targetId);
-  const dir = target ? norm(sub(target.pos, s.pos)) : fromAngle(s.heading);
-  const from = add(s.pos, fromAngle(s.heading, s.radius + 2));
-  makeProjectile(gs, s.team, 'missile', from, scale(dir, w.speed ?? 150), w.dmg, ((w.range) / (w.speed ?? 150)) * 1.6, targetId);
-  gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'missile' });
+  // triple missile du croiseur : la cible verrouillée + les 2 ennemis les plus proches
+  const targets: number[] = [targetId];
+  if (wid === 'missile_triple') {
+    const extra = gs.ships
+      .filter(o => o.alive && isEnemy(s.team, o.team) && o.cloakT <= 0 && o.id !== targetId
+        && dist(o.pos, s.pos) < w.range)
+      .sort((a2, b2) => dist(a2.pos, s.pos) - dist(b2.pos, s.pos));
+    for (const o of extra) { if (targets.length >= 3) break; targets.push(o.id); }
+    while (targets.length < 3) targets.push(targetId);   // à défaut, tout sur la principale
+  }
+  targets.forEach((tid, i) => {
+    const target = shipById(gs, tid) ?? structById(gs, tid);
+    const dir = target ? norm(sub(target.pos, s.pos)) : fromAngle(s.heading);
+    const from = add(s.pos, fromAngle(s.heading + (i - (targets.length - 1) / 2) * 0.5, s.radius + 2));
+    makeProjectile(gs, s.team, 'missile', from, scale(dir, w.speed ?? 150), w.dmg, ((w.range) / (w.speed ?? 150)) * 1.6, tid);
+    gs.fx.push({ type: 'tir', pos: { ...from }, color: w.color, wid: 'missile' });
+  });
 }
 
 /** Distance du missile ennemi le plus proche qui nous traque (-1 si aucun). */
@@ -2602,6 +2707,10 @@ export function aiAcceptsAlliance(gs: GameState, aiTeam: number, other: number):
 /** Propose une alliance. Vers le joueur : crée une offre ; entre IA : résolution immédiate. */
 export function proposeAlliance(gs: GameState, from: number, to: number): string | null {
   if (from === to || !gs.teams[to]?.alive || !gs.teams[from]?.alive) return 'Équipe invalide';
+  // anti-spam : après un refus, impossible de redemander à la même équipe pendant 90 s
+  if ((gs.offerMuted?.[`ask:${from}:${to}`] ?? 0) > gs.t) {
+    return 'Refus récent — attendez avant de redemander (90 s)';
+  }
   if (areAllied(gs, from, to)) {
     // déjà alliés : renouvellement possible dans les 2 dernières minutes
     const key = allyKey(from, to);
@@ -2622,8 +2731,12 @@ export function proposeAlliance(gs: GameState, from: number, to: number): string
     addLog(gs, `${gs.teams[from].name} vous propose une alliance.`, gs.teams[from].cssColor);
     return null;
   }
-  if (aiAcceptsAlliance(gs, to, from)) formAlliance(gs, from, to);
-  else if (from === gs.playerTeam) addLog(gs, `${gs.teams[to].name} refuse votre alliance.`, gs.teams[to].cssColor);
+  if (aiAcceptsAlliance(gs, to, from)) {
+    formAlliance(gs, from, to);
+  } else {
+    gs.offerMuted[`ask:${from}:${to}`] = gs.t + 90;
+    if (from === gs.playerTeam) addLog(gs, `${gs.teams[to].name} refuse votre alliance (réessai dans 90 s).`, gs.teams[to].cssColor);
+  }
   return null;
 }
 

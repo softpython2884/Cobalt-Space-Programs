@@ -35,18 +35,26 @@ export function effectiveTune(gs: GameState): DiffTuning {
 //  PIRATES — la flotte grise
 // ================================================================
 export function spawnPirateRaid(gs: GameState) {
-  // les raids grossissent avec le temps
-  const size = Math.min(2 + Math.floor(gs.t / 300), 5);
+  // les raids grossissent avec le temps, sans plafond mou — et passé 20 min,
+  // des raiders VÉTÉRANS renforcés se glissent dans les meutes
+  const size = Math.min(9, 2 + Math.floor(gs.t / 260));
+  const elite = gs.t > 1200;
   const edgeA = gs.rng() * Math.PI * 2;
   const spawnPos = fromAngle(edgeA, WORLD_R * 0.98);
   for (let i = 0; i < size; i++) {
     const p = add(spawnPos, fromAngle(gs.rng() * Math.PI * 2, 25));
     const raider = makeShip(gs, PIRATE_TEAM, 'raider', p, edgeA + Math.PI);
     raider.order = { ...IDLE };
+    if (elite && i % 2 === 0) {
+      raider.hullMax = Math.round(raider.hullMax * 1.6);
+      raider.hull = raider.hullMax;
+      raider.shieldMax = Math.round(raider.shieldMax * 1.5);
+      raider.shield = raider.shieldMax;
+    }
     gs.fx.push({ type: 'saut', pos: { ...p } });
   }
-  addLog(gs, `Raid pirate détecté (${size} raiders) !`, '#9aa0a8');
-  setAlert(gs, 'RAID PIRATE DÉTECTÉ', 3);
+  addLog(gs, `Raid pirate détecté (${size} raiders${elite ? ' — vétérans' : ''}) !`, '#9aa0a8');
+  setAlert(gs, elite ? 'RAID PIRATE VÉTÉRAN DÉTECTÉ' : 'RAID PIRATE DÉTECTÉ', 3);
 }
 
 export function thinkPirates(gs: GameState, dt: number) {
@@ -124,7 +132,19 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   const colossusThreat = gs.ships.some(sh => sh.alive && sh.cls === 'colosse' && isEnemy(teamId, sh.team));
   const aliveTeams = gs.activeTeams.filter(id => gs.teams[id].alive);
   const aliveAIs = aliveTeams.filter(id => gs.teams[id].isAI);
-  const escalate = colossusThreat || (aliveAIs.length === 1 && aliveAIs[0] === teamId && aliveTeams.length >= 2);
+  // distancée au score par un ennemi (joueur qui snowball compris) : on se bat SÉRIEUSEMENT
+  // dès maintenant — pas seulement quand on est la dernière IA en vie
+  const myScore0 = teamScore(gs, teamId);
+  let foeScoreMax = 0;
+  for (const id of aliveTeams) {
+    if (id === teamId || areAllied(gs, teamId, id)) continue;
+    const sc = teamScore(gs, id);
+    if (sc > foeScoreMax) foeScoreMax = sc;
+  }
+  const minute0 = gs.t / 60;
+  const outmatched = minute0 > 6 && foeScoreMax > myScore0 * 1.55;
+  const escalate = colossusThreat || outmatched
+    || (aliveAIs.length === 1 && aliveAIs[0] === teamId && aliveTeams.length >= 2);
   if (escalate) team.credits += 26;   // mobilisation générale : toute l'industrie tourne pour la guerre
 
   const myShips = gs.ships.filter(s => s.alive && s.team === teamId && s.supportT <= 0);
@@ -144,6 +164,12 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   if (baseThreat) {
     for (const w of [...warships, ...(flagship ? [flagship] : [])]) {
       if (w.order.kind !== 'attack' || gs.rng() < 0.3) w.order = { kind: 'attack', targetId: baseThreat.id };
+    }
+    // les flottes en patrouille sont RÉAFFECTÉES à la défense du cœur
+    for (const pf of gs.fleets) {
+      if (pf.team === teamId && pf.mission.kind.startsWith('patrol')) {
+        setFleetMission(gs, pf, { kind: 'attack', targetId: baseThreat.id });
+      }
     }
     // appelle ses alliés à la rescousse (dont le joueur)
     if (gs.rng() < 0.3) {
@@ -185,9 +211,12 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   }
 
   // ---------- 2. ÉCONOMIE : effectifs voulus ----------
-  // une économie qui grossit avec la partie : les mineurs financent l'armée
-  const wantMiners = Math.round(2 + persona.ecoFocus * 2 + Math.min(3, minute / 6));
-  const wantCargos = myPlanets.length > 0 ? Math.round(1 + persona.ecoFocus * 1.5) : 0;
+  // objectif : TOUJOURS grandir. Les mineurs lancent la machine (3-6, les ressources
+  // s'épuisent) ; ensuite les CARGOS et les revenus passifs prennent le relais, sans plafond bas
+  const wantMiners = Math.round(2 + persona.ecoFocus * 2 + Math.min(2, minute / 8));
+  const wantCargos = myPlanets.length > 0
+    ? Math.min(24, Math.round(myPlanets.length * (1 + persona.ecoFocus) + minute / 5))
+    : 0;
   const wantTransporters = neutralPlanets.length > 0 && minute > 1.5 ? 1 : 0;
   // effectifs militaires : une VRAIE armée, calée sur la plus grosse armée adverse —
   // un joueur qui débarque avec 20 chasseurs et 4 bombardiers ne doit surprendre personne
@@ -218,8 +247,12 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     && team.credits - (SHIP_CLASSES.transporteur.prix + COLONIZE_COST) > 150 + colonizeReserve) {
     if (!tryBuyShip(gs, teamId, 'transporteur', false)) purchases++;
   }
-  if (cargos.length < wantCargos && canBuy(SHIP_CLASSES.cargo.prix)) {
-    if (!tryBuyShip(gs, teamId, 'cargo', false)) purchases++;
+  if (cargos.length < wantCargos) {
+    // la flotte marchande grossit vite quand le réseau commercial est en retard
+    const rounds = wantCargos - cargos.length > 4 ? 2 : 1;
+    for (let k = 0; k < rounds; k++) {
+      if (canBuy(SHIP_CLASSES.cargo.prix) && !tryBuyShip(gs, teamId, 'cargo', false)) purchases++;
+    }
   }
   if (warships.length < wantWarships) {
     // gros déficit (l'ennemi a levé une armée) : jusqu'à 2 recrutements par réflexion
@@ -233,6 +266,36 @@ function thinkOneTeam(gs: GameState, teamId: number) {
       const cls = pool[Math.floor(gs.rng() * pool.length)];
       if (canBuy(SHIP_CLASSES[cls].prix)) {
         if (!tryBuyShip(gs, teamId, cls, false)) purchases++;
+      }
+    }
+  }
+
+  // ---------- 2bis. CROISSANCE PERPÉTUELLE : le surplus s'investit — avec des plafonds ----------
+  // Un tas d'or qui dort ne gagne pas de guerre : cargo de plus, bureau, mine, dépôt,
+  // ou un laboratoire à revenus dans un nuage. Les plafonds évitent l'emballement
+  // bureau → revenus → bureau à l'infini (constaté en sonde : 100 bureaux…).
+  if (team.credits > 2600 && !savingUsine) {
+    const count = (st2: 'bureau' | 'mine' | 'depot' | 'labo') =>
+      gs.structures.filter(x => x.alive && x.team === teamId && x.stype === st2).length;
+    const roll = gs.rng();
+    if (roll < 0.45 && myPlanets.length > 0 && cargos.length < wantCargos) {
+      tryBuyShip(gs, teamId, 'cargo', false);
+    } else if (roll < 0.8) {
+      const stype2: 'bureau' | 'mine' | 'depot' = roll < 0.62 ? 'bureau' : roll < 0.72 ? 'mine' : 'depot';
+      const cap = stype2 === 'bureau' ? 6 : stype2 === 'mine' ? 6 : 3;
+      if (count(stype2) < cap) {
+        for (let tries = 0; tries < 6; tries++) {
+          const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 110 + gs.rng() * 240));
+          if (!canPlaceStructure(gs, teamId, stype2, pos)) { placeStructure(gs, teamId, stype2, pos); break; }
+        }
+      }
+    } else if (count('labo') < 8) {
+      const storm = gs.storms.find(sc => sc.alive);
+      if (storm) {
+        for (let tries = 0; tries < 6; tries++) {
+          const pos = add(storm.pos, fromAngle(gs.rng() * Math.PI * 2, gs.rng() * storm.radius * 0.7));
+          if (!canPlaceStructure(gs, teamId, 'labo', pos)) { placeStructure(gs, teamId, 'labo', pos); break; }
+        }
       }
     }
   }
@@ -254,8 +317,11 @@ function thinkOneTeam(gs: GameState, teamId: number) {
   if (team.credits > 900 && gs.rng() < 0.25 * tune.buildMult) {
     const myOutposts = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'avantposte').length;
     const outpostCap = 1 + Math.floor(minute / 7) + (persona.defense > 0.6 ? 1 : 0);
-    let stype: 'mine' | 'avantposte' | 'satellite' = gs.rng() < 0.5 ? 'mine' : gs.rng() < 0.75 ? 'avantposte' : 'satellite';
-    if (stype === 'avantposte' && myOutposts >= outpostCap) stype = 'mine';
+    let stype: 'mine' | 'avantposte' | 'satellite' | 'bureau' =
+      gs.rng() < 0.4 ? 'mine' : gs.rng() < 0.65 ? 'avantposte' : gs.rng() < 0.8 ? 'bureau' : 'satellite';
+    if (stype === 'avantposte' && myOutposts >= outpostCap) stype = 'bureau';
+    const myBureaux = gs.structures.filter(x => x.alive && x.team === teamId && x.stype === 'bureau').length;
+    if (stype === 'bureau' && myBureaux >= 6) stype = 'mine';
     for (let tries = 0; tries < 6; tries++) {
       const pos = add(station.pos, fromAngle(gs.rng() * Math.PI * 2, 120 + gs.rng() * 260));
       if (!canPlaceStructure(gs, teamId, stype, pos)) { placeStructure(gs, teamId, stype, pos); break; }
@@ -330,6 +396,10 @@ function thinkOneTeam(gs: GameState, teamId: number) {
     const pScore = teamScore(gs, partner), myScore = teamScore(gs, teamId);
     if (!commonFoe || (pScore > myScore * 1.45 && gs.rng() < 0.25 + persona.aggression * 0.4)) {
       breakAlliance(gs, teamId, partner);
+      // la trahison s'annonce en transmission radio, pas en petit caractère
+      if (partner === gs.playerTeam) {
+        setAlert(gs, `${team.name.toUpperCase()} ROMPT VOTRE ALLIANCE`, 5.5, '#ff8c42');
+      }
     }
   }
 
@@ -375,8 +445,12 @@ function thinkOneTeam(gs: GameState, teamId: number) {
       if (grp.length >= 2) {
         const fleet = createFleet(gs, teamId, grp.map(s => s.id), gs.rng() < 0.5 ? 'coin' : 'cercle');
         if (fleet) setFleetMission(gs, fleet, { kind: 'attack', targetId: target });
-      } else if (grp.length === 1) {
-        grp[0].order = { kind: 'attack', targetId: target };
+      } else {
+        // pas assez de vaisseaux libres : une flotte de patrouille est réaffectée à l'assaut
+        const pf = gs.fleets.find(f2 => f2.team === teamId && f2.mission.kind.startsWith('patrol')
+          && fleetShips(gs, f2).length >= 2);
+        if (pf) setFleetMission(gs, pf, { kind: 'attack', targetId: target });
+        else if (grp.length === 1) grp[0].order = { kind: 'attack', targetId: target };
       }
     }
   }

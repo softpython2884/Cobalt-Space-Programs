@@ -54,9 +54,10 @@ export const RES_LIST: Res[] = ['roche', 'minerai', 'gaz'];
 
 // ---------- Identifiants de données (définis dans data.ts) ----------
 export type ShipClassId = 'corvette' | 'chasseur' | 'bombardier' | 'croiseur' | 'mineur' | 'cargo' | 'transporteur' | 'raider' | 'colosse';
-export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile' | 'salve' | 'brise_monde';
+export type WeaponId = 'canon' | 'canon_auto' | 'laser' | 'stase' | 'torpille' | 'plasma' | 'canon_lourd' | 'missile' | 'salve' | 'brise_monde'
+  | 'blast_vert' | 'missile_triple' | 'canon_lourd_auto';
 export type MineType = 'frag' | 'emp' | 'aimant';
-export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo' | 'depot' | 'usine';
+export type StructType = 'station' | 'avantposte' | 'mine' | 'satellite' | 'labo' | 'depot' | 'usine' | 'bureau';
 export type PlanetType = 'tellurique' | 'glace' | 'lave' | 'gazeuse' | 'oceanique' | 'desert';
 export type StarType = 'sol_jaune' | 'sol_rouge' | 'sol_bleu' | 'sol_violet' | 'naine_blanche' | 'binaire' | 'triple' | 'neutron' | 'trou_noir' | 'supergeante';
 export type PersonaId = 'agressif' | 'econome' | 'opportuniste' | 'defensif' | 'equilibre';
@@ -106,6 +107,7 @@ export interface Ship {
   colonizeT: number;              // canal de colonisation en cours
   tradePhase: 0 | 1;              // 0 = va vers la planète, 1 = retourne à la station
   tradeBoost: number;             // carrefour commercial : équipes tierces présentes au chargement
+  garrison: boolean;              // corvette de garnison (gratuite, réapparaît à la station)
   kills: number;
 }
 
@@ -201,6 +203,7 @@ export interface TeamState {
   secondaries: WeaponId[];           // armes secondaires achetées (joueur)
   aiCd: number;                      // réflexion macro IA
   respawnT: number;                  // délai de réapparition de l'amiral
+  garrisonT: number;                 // délai avant réassort des corvettes de garnison
   colossusUsed: boolean;             // le Colosse ne peut être créé qu'une seule fois
   score: number;
   kills: number;

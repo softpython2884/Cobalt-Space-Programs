@@ -376,6 +376,24 @@ export function buildStructure(stype: StructType, teamColor: number): THREE.Grou
       g.add(box(2, 3, 2, light, 11, 0.5, 0));
       break;
     }
+    case 'bureau': {
+      // tour administrative : gratte-ciel étagé, fenêtres lumineuses, antenne
+      g.add(box(7, 3, 7, mid, 0, -0.5, 0));
+      g.add(box(5.2, 5, 5.2, light, 0, 3, 0));
+      g.add(box(3.6, 4, 3.6, mid, 0, 7, 0));
+      const win = mat(0xffd84b, { emissive: 0xffd84b, emissiveIntensity: 0.9 });
+      for (const y of [2, 4, 6.5, 8]) {
+        g.add(box(5.6, 0.5, 0.8, win, 0, y, y > 5 ? 1.5 : 2.4));
+      }
+      g.add(cyl(0.3, 0.3, 5, 4, dark, 0, 11, 0));
+      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.7, 6, 4),
+        mat(0x4bff7a, { emissive: 0x4bff7a, emissiveIntensity: 1.6 }));
+      beacon.position.y = 13.6;
+      beacon.name = 'blink';
+      g.add(beacon);
+      g.add(box(3, 1.2, 3, accent, 4.5, -1, 4.5));
+      break;
+    }
     case 'satellite': {
       g.add(box(2.2, 2.2, 2.2, light));
       const panel = mat(0x2b5fa8, { emissive: 0x2b5fa8, emissiveIntensity: 0.4, metalness: 0.6 });

@@ -22,7 +22,7 @@ export function makeShip(gs: GameState, team: number, cls: ShipClassId, pos: V2,
     stasisT: 0, empT: 0, cloakT: 0, smokeT: 0, invulnT: 0, jumpT: 0,
     lastDmgT: -999, aiCd: gs.rng() * 0.5, avoidSeed: gs.rng() * 100,
     isFlagship: false, alive: true, supportT: 0, lockT: 0, lockTargetId: -1,
-    miningRes: null, colonizeT: 0, tradePhase: 0, tradeBoost: 0, kills: 0,
+    miningRes: null, colonizeT: 0, tradePhase: 0, tradeBoost: 0, garrison: false, kills: 0,
   };
   gs.ships.push(ship);
   return ship;
@@ -118,12 +118,15 @@ export function shipsOfTeam(gs: GameState, team: number): Ship[] {
   return gs.ships.filter(s => s.alive && s.team === team);
 }
 
+// La distance se teste AVANT le prédicat : canDetect (souvent passé en pred) est
+// coûteux, et l'élagage par distance en évite l'immense majorité des appels.
 export function nearestShip(gs: GameState, pos: V2, pred: (s: Ship) => boolean, maxD = Infinity): Ship | null {
   let best: Ship | null = null, bd = maxD;
   for (const s of gs.ships) {
-    if (!s.alive || !pred(s)) continue;
+    if (!s.alive) continue;
     const d = dist(s.pos, pos);
-    if (d < bd) { bd = d; best = s; }
+    if (d >= bd || !pred(s)) continue;
+    bd = d; best = s;
   }
   return best;
 }
@@ -131,9 +134,10 @@ export function nearestShip(gs: GameState, pos: V2, pred: (s: Ship) => boolean, 
 export function nearestStruct(gs: GameState, pos: V2, pred: (s: Structure) => boolean, maxD = Infinity): Structure | null {
   let best: Structure | null = null, bd = maxD;
   for (const s of gs.structures) {
-    if (!s.alive || !pred(s)) continue;
+    if (!s.alive) continue;
     const d = dist(s.pos, pos);
-    if (d < bd) { bd = d; best = s; }
+    if (d >= bd || !pred(s)) continue;
+    bd = d; best = s;
   }
   return best;
 }
